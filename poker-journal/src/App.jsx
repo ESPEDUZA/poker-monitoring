@@ -22,6 +22,7 @@ const DEFAULT_DATA = {
   },
   monthlyHistory: [],
   xp: 0,
+  hhSessions: [],
 }
 
 const HORIZONS = [
@@ -67,6 +68,209 @@ function getLevel(xp) {
   return { current, next }
 }
 
+// ===== HH IMPORT ENGINE =====
+
+const _RANKS = '23456789TJQKA'
+
+function _parseCard(s) {
+  if (!s || s.length < 2) return null
+  const r = _RANKS.indexOf(s[0].toUpperCase())
+  const suit = 'SHDC'.indexOf(s[1].toUpperCase())
+  return (r >= 0 && suit >= 0) ? { rank: r, suit } : null
+}
+
+function _parseCardArr(str) {
+  return str.replace(/[\[\]]/g, '').trim().split(/\s+/).map(_parseCard).filter(Boolean)
+}
+
+function _eval5(cs) {
+  const r = cs.map(c => c.rank).sort((a, b) => b - a)
+  const flush = cs.every(c => c.suit === cs[0].suit)
+  const fr = {}; r.forEach(x => fr[x] = (fr[x] || 0) + 1)
+  const bf = Object.entries(fr).sort((a, b) => b[1] - a[1] || +b[0] - +a[0]).map(([k]) => +k)
+  const cnt = bf.map(k => fr[k])
+  const u = [...new Set(r)].sort((a, b) => b - a)
+  let st = false, sh = 0
+  if (u.length === 5) {
+    if (u[0] - u[4] === 4) { st = true; sh = u[0] }
+    else if (u[0] === 12 && u[1] === 3 && u[2] === 2 && u[3] === 1 && u[4] === 0) { st = true; sh = 3 }
+  }
+  const sc = (cat, a = 0, b = 0, c = 0, d = 0, e = 0) =>
+    (cat << 20) | (a << 16) | (b << 12) | (c << 8) | (d << 4) | e
+  if (flush && st) return sc(8, sh)
+  if (cnt[0] === 4) return sc(7, bf[0], bf[1])
+  if (cnt[0] === 3 && cnt[1] === 2) return sc(6, bf[0], bf[1])
+  if (flush) return sc(5, r[0], r[1], r[2], r[3], r[4])
+  if (st) return sc(4, sh)
+  if (cnt[0] === 3) return sc(3, bf[0], bf[1], bf[2])
+  if (cnt[0] === 2 && cnt[1] === 2) return sc(2, Math.max(bf[0], bf[1]), Math.min(bf[0], bf[1]), bf[2])
+  if (cnt[0] === 2) return sc(1, bf[0], bf[1], bf[2], bf[3])
+  return sc(0, r[0], r[1], r[2], r[3], r[4])
+}
+
+function _best5(cards) {
+  if (cards.length < 5) return 0
+  if (cards.length === 5) return _eval5(cards)
+  let best = -Infinity
+  for (let i = 0; i < cards.length; i++)
+    for (let j = i + 1; j < cards.length; j++)
+      for (let k = j + 1; k < cards.length; k++)
+        for (let l = k + 1; l < cards.length; l++)
+          for (let m = l + 1; m < cards.length; m++) {
+            const s = _eval5([cards[i], cards[j], cards[k], cards[l], cards[m]])
+            if (s > best) best = s
+          }
+  return best
+}
+
+function _makeDeck(exclude) {
+  const ex = new Set(exclude.map(c => c.suit * 13 + c.rank))
+  const d = []
+  for (let s = 0; s < 4; s++) for (let r = 0; r < 13; r++) if (!ex.has(s * 13 + r)) d.push({ rank: r, suit: s })
+  return d
+}
+
+function _calcEquity(h, v, board, n = 1500) {
+  const deck = _makeDeck([...h, ...v, ...board])
+  const need = 5 - board.length
+  if (need <= 0) {
+    const hs = _best5([...h, ...board]), vs = _best5([...v, ...board])
+    return hs > vs ? 1 : hs < vs ? 0 : 0.5
+  }
+  let w = 0, t = 0
+  for (let i = 0; i < n; i++) {
+    const d2 = [...deck]
+    for (let k = d2.length - 1; k > 0; k--) { const j = (Math.random() * (k + 1)) | 0;[d2[k], d2[j]] = [d2[j], d2[k]] }
+    const fb = [...board, ...d2.slice(0, need)]
+    const hs = _best5([...h, ...fb]), vs = _best5([...v, ...fb])
+    if (hs > vs) w++; else if (hs === vs) t++
+  }
+  return (w + t * 0.5) / n
+}
+
+function _parseHand(text) {
+  const lines = text.trim().split('\n').map(l => l.trim()).filter(Boolean)
+  if (!lines.length) return null
+  const hand = {
+    handId: null, gameId: null, date: null,
+    prizePool: 0, buyIn: 0, multiplier: 1,
+    blinds: { sb: 0, bb: 0 },
+    players: [], hero: null, heroCards: [],
+    board: [], boardAtAllin: [],
+    allInStreet: null, allInPot: 0, heroAllin: false,
+    showdown: [], winners: [], heroFinish: null,
+  }
+  let sec = 'header', boardFlop = [], boardTurn = null, boardRiver = null
+  for (const line of lines) {
+    if (line === '*** HEADER ***') { sec = 'header'; continue }
+    if (line === '*** PLAYERS ***') { sec = 'players'; continue }
+    if (line === '*** HOLE CARDS ***') { sec = 'holecards'; continue }
+    if (line.startsWith('*** PRE-FLOP ***')) { sec = 'preflop'; continue }
+    if (line.startsWith('*** FLOP ***')) {
+      sec = 'flop'
+      const m = line.match(/\[([^\]]+)\]/); if (m) boardFlop = _parseCardArr(m[1])
+      continue
+    }
+    if (line.startsWith('*** TURN ***')) {
+      sec = 'turn'
+      const m = line.match(/\[([^\]]+)\]/); if (m) { const cs = _parseCardArr(m[1]); boardTurn = cs[cs.length - 1] }
+      continue
+    }
+    if (line.startsWith('*** RIVER ***')) {
+      sec = 'river'
+      const m = line.match(/\[([^\]]+)\]/); if (m) { const cs = _parseCardArr(m[1]); boardRiver = cs[cs.length - 1] }
+      continue
+    }
+    if (line.startsWith('*** SHOWDOWN ***')) { sec = 'showdown'; continue }
+    if (line.startsWith('*** SUMMARY ***')) { sec = 'summary'; continue }
+
+    if (sec === 'header') {
+      if (line.startsWith('Hand ID:')) hand.handId = line.slice(8).trim()
+      else if (line.startsWith('Game ID:')) hand.gameId = line.slice(8).trim()
+      else if (line.startsWith('Date & Time:')) hand.date = line.slice(12).trim()
+      else if (line.startsWith('Blinds:')) { const m = line.match(/(\d+)\/(\d+)/); if (m) { hand.blinds.sb = +m[1]; hand.blinds.bb = +m[2] } }
+      else if (line.startsWith('Prize pool:')) hand.prizePool = parseFloat(line.replace(/[^0-9.]/g, '')) || 0
+      else if (line.startsWith('Buy In:')) hand.buyIn = parseFloat(line.replace(/[^0-9.]/g, '')) || 0
+      else if (line.startsWith('Multiplier:')) { const m = line.match(/x([\d.]+)/); if (m) hand.multiplier = parseFloat(m[1]) }
+      else if (line.startsWith('Total Pot:')) hand.allInPot = parseInt(line.split(':')[1]) || 0
+    }
+
+    if (sec === 'players') {
+      const m = line.match(/^Seat \d+: (.+?) \((\d+)\)\s*\[([^\]]+)\]/)
+      if (m) {
+        const isHero = m[3].includes('Hero')
+        hand.players.push({ name: m[1].trim(), chips: +m[2], isHero })
+        if (isHero) hand.hero = m[1].trim()
+      }
+    }
+
+    if (sec === 'holecards' && hand.hero) {
+      const m = line.match(/^(.+?):\s*\[([^\]]+)\]/)
+      if (m && m[1].trim() === hand.hero) hand.heroCards = _parseCardArr(m[2])
+    }
+
+    if (['preflop', 'flop', 'turn', 'river'].includes(sec) && hand.hero && !hand.heroAllin) {
+      if (line.toLowerCase().includes('and is all-in') && line.startsWith(hand.hero + ':')) {
+        hand.heroAllin = true
+        hand.allInStreet = sec
+        hand.boardAtAllin = [...boardFlop, ...(boardTurn ? [boardTurn] : []), ...(boardRiver ? [boardRiver] : [])]
+      }
+    }
+
+    if (sec === 'showdown') {
+      const m = line.match(/^(.+?)\s+shows\s+\[([^\]]+)\]/)
+      if (m) hand.showdown.push({ player: m[1].trim(), cards: _parseCardArr(m[2]) })
+    }
+
+    if (sec === 'summary') {
+      const wm = line.match(/^(.+?)\s+wins\s+(?:main pot|side pot)\s+of\s+(\d+)/)
+      if (wm) hand.winners.push({ player: wm[1].trim(), amount: +wm[2] })
+      const fm = line.match(/^(.+?)\s+finished\s+\d+[a-z]+\s+and\s+wins\s+([\d.]+)/)
+      if (fm && hand.hero && fm[1].trim() === hand.hero) hand.heroFinish = { prize: parseFloat(fm[2]) }
+    }
+  }
+  hand.board = [...boardFlop, ...(boardTurn ? [boardTurn] : []), ...(boardRiver ? [boardRiver] : [])]
+  return hand.handId ? hand : null
+}
+
+function _parseBetclicHH(text) {
+  return text.replace(/â¬/g, '€').replace(/\r/g, '').split(/^-{4,}$/m).map(t => t.trim()).filter(Boolean).map(_parseHand).filter(Boolean)
+}
+
+function _calcSessionStats(hands) {
+  const tourns = {}
+  for (const h of hands) {
+    const gid = h.gameId || '_'
+    if (!tourns[gid]) tourns[gid] = { hands: [], prizePool: h.prizePool, buyIn: h.buyIn, multiplier: h.multiplier, heroPrize: 0, heroWon: false }
+    tourns[gid].hands.push(h)
+    if (h.heroFinish) { tourns[gid].heroPrize = h.heroFinish.prize; tourns[gid].heroWon = true }
+  }
+  let cevTotal = 0, allinTotal = 0, buyInTotal = 0, prizeTotal = 0, wonCount = 0
+  const tList = []
+  for (const [gid, tn] of Object.entries(tourns)) {
+    const totalChips = tn.hands[0]?.players.reduce((s, p) => s + p.chips, 0) || 500
+    let cev = 0, allin = 0
+    for (const h of tn.hands) {
+      if (!h.heroAllin || !h.hero) continue
+      const vs = h.showdown.find(s => s.player !== h.hero)
+      if (!vs || vs.cards.length < 2) continue
+      const hs = h.showdown.find(s => s.player === h.hero)
+      const hCards = (hs?.cards?.length >= 2) ? hs.cards : h.heroCards
+      if (hCards.length < 2) continue
+      const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
+      const pot = h.allInPot
+      const actualChips = h.winners.some(w => w.player === h.hero) ? pot : 0
+      cev += ((actualChips - eq * pot) / totalChips) * tn.prizePool
+      allin++
+    }
+    cevTotal += cev; allinTotal += allin; buyInTotal += tn.buyIn; prizeTotal += tn.heroPrize
+    if (tn.heroWon) wonCount++
+    tList.push({ gameId: gid, prizePool: tn.prizePool, buyIn: tn.buyIn, multiplier: tn.multiplier, handCount: tn.hands.length, allinSpots: allin, cevDiff: cev, heroWon: tn.heroWon, heroPrize: tn.heroPrize })
+  }
+  const n = Object.keys(tourns).length
+  return { importedAt: new Date().toISOString(), totalHands: hands.length, totalTournaments: n, totalBuyIn: buyInTotal, totalPrizeWon: prizeTotal, netResult: prizeTotal - buyInTotal, winRate: n ? wonCount / n : 0, allinSpots: allinTotal, cevDiff: cevTotal, tournaments: tList }
+}
+
 export default function App() {
   const [data, setData] = useState(DEFAULT_DATA)
   const [loading, setLoading] = useState(true)
@@ -79,6 +283,10 @@ export default function App() {
   const [showSideForm, setShowSideForm] = useState(false)
   const [newSide, setNewSide] = useState({ title: '', category: 'physical', description: '' })
   const [xpBurst, setXpBurst] = useState(null)
+  const [hhView, setHhView] = useState('list')
+  const [hhSelectedIdx, setHhSelectedIdx] = useState(null)
+  const [hhProcessing, setHhProcessing] = useState(false)
+  const [hhError, setHhError] = useState(null)
 
   // Load data from storage (graceful fallback to localStorage, then defaults)
   useEffect(() => {
@@ -115,6 +323,30 @@ export default function App() {
     } catch (e) {
       console.warn('save failed', e)
     }
+  }
+
+  const handleHHImport = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    setHhProcessing(true)
+    setHhError(null)
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try {
+        const hands = _parseBetclicHH(evt.target.result)
+        if (!hands.length) { setHhError('Aucune main valide trouvée dans ce fichier.'); setHhProcessing(false); return }
+        const stats = _calcSessionStats(hands)
+        const newSessions = [...(data.hhSessions || []), stats]
+        saveData({ ...data, hhSessions: newSessions })
+        setHhSelectedIdx(newSessions.length - 1)
+        setHhView('detail')
+      } catch (err) {
+        setHhError('Erreur de parsing: ' + err.message)
+      }
+      setHhProcessing(false)
+      e.target.value = ''
+    }
+    reader.readAsText(file, 'UTF-8')
   }
 
   const triggerXpBurst = (amount) => {
@@ -334,6 +566,7 @@ export default function App() {
             { id: 'problemes', label: 'PROBLÈMES', num: '03' },
             { id: 'annexes', label: 'ANNEXES', num: '04' },
             { id: 'mensuel', label: 'MENSUEL', num: '05' },
+            { id: 'hh', label: 'ANALYSE HH', num: '06' },
           ].map(t => (
             <button
               key={t.id}
@@ -785,6 +1018,72 @@ export default function App() {
             )}
           </section>
         )}
+
+        {/* === ANALYSE HH === */}
+        {tab === 'hh' && (
+          <section className="section">
+            <SectionHeader
+              num="06"
+              title='"ANALYSE HH"'
+              subtitle="SESSIONS SPIN & GO — BETCLIC"
+              color="#C9A84C"
+              action={hhView === 'detail' && (
+                <button className="btn-ghost" onClick={() => setHhView('list')}>← RETOUR</button>
+              )}
+            />
+
+            {hhView === 'list' && (
+              <div className="hh-wrap">
+                <label className="hh-dropzone" htmlFor="hh-file">
+                  <span className="hh-drop-icon">▲</span>
+                  <div className="hh-drop-title">IMPORTER FICHIER HH</div>
+                  <div className="hh-drop-sub">Format Betclic .txt — Spin &amp; Go</div>
+                  {hhProcessing && <div className="hh-drop-loading">ANALYSE EN COURS...</div>}
+                  <input id="hh-file" type="file" accept=".txt" style={{ display: 'none' }} onChange={handleHHImport} />
+                </label>
+                {hhError && <div className="hh-error">{hhError}</div>}
+
+                {!(data.hhSessions || []).length ? (
+                  <div className="hh-empty">
+                    <div className="hh-empty-icon">◈</div>
+                    <div className="hh-empty-text">"AUCUNE SESSION IMPORTÉE"</div>
+                  </div>
+                ) : (
+                  <div className="hh-session-list">
+                    <div className="hh-list-title">SESSIONS ARCHIVÉES — {(data.hhSessions || []).length}</div>
+                    {[...(data.hhSessions || [])].reverse().map((s, ri) => {
+                      const idx = (data.hhSessions.length - 1) - ri
+                      return (
+                        <div key={idx} className="hh-session-card" onClick={() => { setHhSelectedIdx(idx); setHhView('detail') }}>
+                          <div className="hh-sc-left">
+                            <div className="hh-sc-date">{new Date(s.importedAt).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                            <div className="hh-sc-meta">{s.totalTournaments} TOURNOIS · {s.totalHands} MAINS · {s.allinSpots} ALL-INS</div>
+                          </div>
+                          <div className="hh-sc-right">
+                            <div className={`hh-sc-result ${s.netResult >= 0 ? 'hh-pos' : 'hh-neg'}`}>{s.netResult >= 0 ? '+' : ''}{s.netResult.toFixed(2)}€</div>
+                            <div className={`hh-sc-cev ${s.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>CEV {s.cevDiff >= 0 ? '+' : ''}{s.cevDiff.toFixed(2)}€</div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {hhView === 'detail' && hhSelectedIdx !== null && (data.hhSessions || [])[hhSelectedIdx] && (
+              <HHDetail
+                session={(data.hhSessions || [])[hhSelectedIdx]}
+                onDelete={() => {
+                  const updated = (data.hhSessions || []).filter((_, i) => i !== hhSelectedIdx)
+                  saveData({ ...data, hhSessions: updated })
+                  setHhView('list')
+                  setHhSelectedIdx(null)
+                }}
+              />
+            )}
+          </section>
+        )}
       </main>
 
       <footer className="footer">
@@ -801,6 +1100,70 @@ export default function App() {
           <span>{new Date().getFullYear()}</span>
         </div>
       </footer>
+    </div>
+  )
+}
+
+function HHDetail({ session: s, onDelete }) {
+  const fmt = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '€'
+  return (
+    <div className="hh-detail">
+      <div className="hh-detail-date">
+        IMPORTÉ LE {new Date(s.importedAt).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+      </div>
+
+      <div className="hh-stat-grid">
+        <div className="hh-stat-hero">
+          <div className="hh-stat-label">CEV TOTAL</div>
+          <div className={`hh-stat-big ${s.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>{fmt(s.cevDiff)}</div>
+          <div className="hh-stat-sub">{s.allinSpots} SPOTS ALL-IN CALCULÉS</div>
+        </div>
+        <div className="hh-stat-card">
+          <div className="hh-stat-label">RÉSULTAT NET</div>
+          <div className={`hh-stat-val ${s.netResult >= 0 ? 'hh-pos' : 'hh-neg'}`}>{fmt(s.netResult)}</div>
+        </div>
+        <div className="hh-stat-card">
+          <div className="hh-stat-label">WIN RATE</div>
+          <div className="hh-stat-val">{(s.winRate * 100).toFixed(1)}%</div>
+        </div>
+        <div className="hh-stat-card">
+          <div className="hh-stat-label">BUY-IN TOTAL</div>
+          <div className="hh-stat-val">{s.totalBuyIn.toFixed(2)}€</div>
+        </div>
+        <div className="hh-stat-card">
+          <div className="hh-stat-label">PRIZE WON</div>
+          <div className="hh-stat-val">{s.totalPrizeWon.toFixed(2)}€</div>
+        </div>
+        <div className="hh-stat-card">
+          <div className="hh-stat-label">TOURNOIS</div>
+          <div className="hh-stat-val">{s.totalTournaments}</div>
+        </div>
+      </div>
+
+      {s.tournaments?.length > 0 && (
+        <div className="hh-tourns">
+          <div className="hh-tourns-title">DÉTAIL PAR TOURNOI — {s.tournaments.length}</div>
+          <div className="hh-tourns-list">
+            {s.tournaments.map((t, i) => (
+              <div key={i} className={`hh-tourn-row ${t.heroWon ? 'won' : ''}`}>
+                <div className="hh-tourn-left">
+                  <span className="hh-tourn-mul">x{t.multiplier}</span>
+                  <span className="hh-tourn-pool">{t.prizePool.toFixed(0)}€</span>
+                  <span className="hh-tourn-hands">{t.handCount} MAINS</span>
+                </div>
+                <div className="hh-tourn-right">
+                  {t.allinSpots > 0 && <span className={`hh-tourn-cev ${t.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>CEV {fmt(t.cevDiff)}</span>}
+                  <span className={`hh-tourn-result ${t.heroWon ? 'hh-pos' : 'hh-neg'}`}>
+                    {t.heroWon ? fmt(t.heroPrize - t.buyIn) : fmt(-t.buyIn)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <button className="hh-delete-btn" onClick={onDelete}>SUPPRIMER CETTE SESSION</button>
     </div>
   )
 }
@@ -2517,6 +2880,142 @@ const css = `
 
 .history-stats .pos { color: #3E9E6E; }
 .history-stats .neg { color: #C45A5A; }
+
+/* ===== HH IMPORT ===== */
+.hh-wrap { display: flex; flex-direction: column; gap: 24px; }
+
+.hh-dropzone {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 48px 40px; border: 1px dashed #2A2A3A; border-radius: 2px;
+  cursor: pointer; transition: all 0.2s; background: #0D0D14;
+}
+.hh-dropzone:hover { border-color: #C9A84C; background: #13131A; }
+.hh-drop-icon { font-size: 28px; color: #C9A84C; }
+.hh-drop-title {
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700;
+  letter-spacing: 0.15em; color: #ECECF0;
+}
+.hh-drop-sub {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: #44445A; letter-spacing: 0.1em;
+}
+.hh-drop-loading {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: #C9A84C; letter-spacing: 0.2em; animation: hh-pulse 1s infinite;
+}
+@keyframes hh-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.hh-error {
+  background: #1A0D0D; border: 1px solid #C45A5A; padding: 12px 16px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: #C45A5A; letter-spacing: 0.05em;
+}
+
+.hh-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 80px 40px; border: 1px solid #1C1C26; background: #0D0D14;
+}
+.hh-empty-icon { font-size: 32px; color: #2A2A3A; }
+.hh-empty-text {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: #44445A; letter-spacing: 0.15em;
+}
+
+.hh-list-title {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
+  letter-spacing: 0.2em; color: #44445A; padding-bottom: 12px;
+  border-bottom: 1px solid #1C1C26;
+}
+.hh-session-list { display: flex; flex-direction: column; gap: 2px; }
+.hh-session-card {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border: 1px solid #1C1C26; background: #0D0D14;
+  cursor: pointer; transition: all 0.2s;
+}
+.hh-session-card:hover { border-color: #C9A84C; background: #13131A; }
+.hh-sc-date {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+  color: #ECECF0; letter-spacing: 0.05em;
+}
+.hh-sc-meta {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: #44445A; letter-spacing: 0.08em; margin-top: 4px;
+}
+.hh-sc-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.hh-sc-result {
+  font-family: 'JetBrains Mono', monospace; font-size: 15px;
+  font-weight: 900; letter-spacing: -0.02em;
+}
+.hh-sc-cev {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  font-weight: 700; letter-spacing: 0.05em;
+}
+
+.hh-detail { display: flex; flex-direction: column; gap: 32px; }
+.hh-detail-date {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: #44445A; letter-spacing: 0.15em;
+}
+.hh-stat-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 2px; }
+.hh-stat-hero {
+  background: #13131A; border: 1px solid #C9A84C33; padding: 32px;
+  grid-row: span 2; display: flex; flex-direction: column; gap: 8px;
+}
+.hh-stat-card {
+  background: #0D0D14; border: 1px solid #1C1C26; padding: 20px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.hh-stat-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  font-weight: 700; letter-spacing: 0.2em; color: #44445A;
+}
+.hh-stat-big {
+  font-family: 'JetBrains Mono', monospace; font-size: 38px;
+  font-weight: 900; letter-spacing: -0.03em; line-height: 1;
+}
+.hh-stat-val {
+  font-family: 'JetBrains Mono', monospace; font-size: 22px;
+  font-weight: 900; letter-spacing: -0.02em; color: #ECECF0;
+}
+.hh-stat-sub {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  color: #44445A; letter-spacing: 0.1em;
+}
+
+.hh-tourns-title {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
+  letter-spacing: 0.2em; color: #44445A; padding-bottom: 12px;
+  border-bottom: 1px solid #1C1C26; margin-bottom: 4px;
+}
+.hh-tourns-list { display: flex; flex-direction: column; gap: 2px; }
+.hh-tourn-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border: 1px solid #1C1C26; background: #0D0D14;
+  border-left: 2px solid #1C1C26;
+}
+.hh-tourn-row.won { border-left-color: #3E9E6E; }
+.hh-tourn-left {
+  display: flex; align-items: center; gap: 16px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8888AA;
+}
+.hh-tourn-mul { color: #C9A84C; font-weight: 700; }
+.hh-tourn-pool { color: #ECECF0; font-weight: 700; }
+.hh-tourn-right {
+  display: flex; align-items: center; gap: 20px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+}
+.hh-tourn-result { font-size: 13px; }
+
+.hh-delete-btn {
+  align-self: flex-start; background: none; border: 1px solid #2A2A3A;
+  color: #44445A; font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  font-weight: 700; letter-spacing: 0.15em; padding: 10px 20px;
+  cursor: pointer; transition: all 0.2s;
+}
+.hh-delete-btn:hover { border-color: #C45A5A; color: #C45A5A; }
+
+.hh-pos { color: #3E9E6E; }
+.hh-neg { color: #C45A5A; }
 
 /* ===== FOOTER ===== */
 .footer {
