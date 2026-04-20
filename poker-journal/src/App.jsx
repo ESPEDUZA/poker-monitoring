@@ -750,6 +750,8 @@ export default function App() {
               </div>
             </div>
 
+            <PerformanceChart history={data.monthlyHistory} current={m} />
+
             <div className="notes-card">
               <div className="notes-tag">"NOTES DU MOIS" ●</div>
               <textarea
@@ -814,6 +816,120 @@ function SectionHeader({ num, title, subtitle, color, action }) {
         </div>
       </div>
       {action}
+    </div>
+  )
+}
+
+function PerformanceChart({ history, current }) {
+  const allMonths = [...history].reverse()
+  if (Number(current.bankrollEnd) > 0 || Number(current.bankrollStart) > 0) {
+    allMonths.push(current)
+  }
+
+  if (allMonths.length < 2) {
+    return (
+      <div className="chart-wrap chart-empty">
+        <div className="chart-empty-inner">
+          <span className="chart-empty-icon">◈</span>
+          <p>"GRAPHIQUE DISPONIBLE DÈS LE 2ÈME MOIS ARCHIVÉ"</p>
+        </div>
+      </div>
+    )
+  }
+
+  const W = 800
+  const H = 220
+  const PAD = { top: 32, right: 24, bottom: 44, left: 60 }
+  const chartW = W - PAD.left - PAD.right
+  const chartH = H - PAD.top - PAD.bottom
+
+  const bankrolls = allMonths.map(m => Number(m.bankrollEnd) || Number(m.bankrollStart) || 0)
+  const minBR = Math.min(...bankrolls)
+  const maxBR = Math.max(...bankrolls)
+  const rangeBR = maxBR - minBR || 1
+
+  const toX = i => PAD.left + (i / (allMonths.length - 1)) * chartW
+  const toY = v => PAD.top + chartH - ((v - minBR) / rangeBR) * chartH
+
+  const linePath = bankrolls.map((v, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ')
+  const areaPath = `${linePath} L${toX(bankrolls.length - 1).toFixed(1)},${(PAD.top + chartH).toFixed(1)} L${PAD.left.toFixed(1)},${(PAD.top + chartH).toFixed(1)} Z`
+
+  const nets = allMonths.map(m => (Number(m.bankrollEnd) || 0) - (Number(m.bankrollStart) || 0))
+  const maxAbsNet = Math.max(...nets.map(Math.abs), 1)
+
+  const BAR_H = 72
+  const BAR_PAD = { top: 18, bottom: 14, left: 60, right: 24 }
+  const barChartH = BAR_H + BAR_PAD.top + BAR_PAD.bottom
+  const barW = Math.max(6, (chartW / allMonths.length) * 0.55)
+  const barMidY = BAR_PAD.top + BAR_H / 2
+
+  const ticks = Array.from({ length: 5 }, (_, i) => minBR + (rangeBR * i) / 4)
+
+  const monthLabel = (m) => {
+    const parts = (m.month || '').split(' ')
+    return parts[0] ? parts[0].slice(0, 3).toUpperCase() : `M${allMonths.indexOf(m) + 1}`
+  }
+
+  return (
+    <div className="chart-wrap">
+      <div className="chart-header">
+        <div>
+          <span className="chart-title">"PERFORMANCE"</span>
+          <span className="chart-title-sub"> BANKROLL & RÉSULTATS MENSUELS</span>
+        </div>
+        <div className="chart-legend">
+          <span className="legend-dot pos" /><span>POSITIF</span>
+          <span className="legend-dot neg" /><span>NÉGATIF</span>
+          <span className="legend-dot br" /><span>BANKROLL</span>
+        </div>
+      </div>
+
+      <svg viewBox={`0 0 ${W} ${H}`} className="chart-svg" preserveAspectRatio="xMidYMid meet">
+        <text x={PAD.left} y={PAD.top - 12} fontSize="9" fontFamily="'JetBrains Mono',monospace" fill="#888" fontWeight="700" letterSpacing="2">BANKROLL (€)</text>
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line x1={PAD.left} y1={toY(t).toFixed(1)} x2={W - PAD.right} y2={toY(t).toFixed(1)} stroke="#EAEAE6" strokeWidth="1" />
+            <text x={PAD.left - 8} y={toY(t)} textAnchor="end" dominantBaseline="middle" fontSize="9" fontFamily="'JetBrains Mono',monospace" fill="#999" fontWeight="500">
+              {Math.abs(t) >= 1000 ? `${(t / 1000).toFixed(1)}k` : Math.round(t)}
+            </text>
+          </g>
+        ))}
+        <path d={areaPath} fill="#C9A84C" fillOpacity="0.07" />
+        <path d={linePath} fill="none" stroke="#C9A84C" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        {bankrolls.map((v, i) => (
+          <g key={i}>
+            <circle cx={toX(i).toFixed(1)} cy={toY(v).toFixed(1)} r="5" fill="#fff" stroke="#C9A84C" strokeWidth="2" />
+            <circle cx={toX(i).toFixed(1)} cy={toY(v).toFixed(1)} r="2" fill="#C9A84C" />
+            <text x={toX(i).toFixed(1)} y={PAD.top + chartH + 16} textAnchor="middle" fontSize="9" fontFamily="'JetBrains Mono',monospace" fill="#666" fontWeight="500">
+              {monthLabel(allMonths[i])}
+            </text>
+          </g>
+        ))}
+        <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={PAD.top + chartH} stroke="#1A1A1A" strokeWidth="1.5" />
+        <line x1={PAD.left} y1={PAD.top + chartH} x2={W - PAD.right} y2={PAD.top + chartH} stroke="#1A1A1A" strokeWidth="1.5" />
+      </svg>
+
+      <svg viewBox={`0 0 ${W} ${barChartH}`} className="chart-svg chart-bars" preserveAspectRatio="xMidYMid meet">
+        <text x={PAD.left} y={9} fontSize="9" fontFamily="'JetBrains Mono',monospace" fill="#888" fontWeight="700" letterSpacing="2">NET MENSUEL (€)</text>
+        <line x1={PAD.left} y1={barMidY} x2={W - PAD.right} y2={barMidY} stroke="#1A1A1A" strokeWidth="1.5" />
+        {nets.map((n, i) => {
+          const bh = Math.max(2, (Math.abs(n) / maxAbsNet) * (BAR_H / 2 - 6))
+          const isPos = n >= 0
+          const bx = toX(i) - barW / 2
+          const by = isPos ? barMidY - bh : barMidY
+          return (
+            <g key={i}>
+              <rect x={bx.toFixed(1)} y={by.toFixed(1)} width={barW.toFixed(1)} height={bh.toFixed(1)} fill={isPos ? '#4E7A5A' : '#8B3A3A'} opacity="0.88" />
+              {Math.abs(n) > 0 && (
+                <text x={toX(i).toFixed(1)} y={(isPos ? barMidY - bh - 5 : barMidY + bh + 10).toFixed(1)} textAnchor="middle" fontSize="8" fontFamily="'JetBrains Mono',monospace" fill={isPos ? '#4E7A5A' : '#8B3A3A'} fontWeight="700">
+                  {isPos ? '+' : ''}{n}€
+                </text>
+              )}
+            </g>
+          )
+        })}
+        <line x1={PAD.left} y1={0} x2={PAD.left} y2={barChartH} stroke="#1A1A1A" strokeWidth="1.5" />
+      </svg>
     </div>
   )
 }
@@ -2118,6 +2234,98 @@ const css = `
 }
 
 /* NOTES */
+/* ===== PERFORMANCE CHART ===== */
+.chart-wrap {
+  background: #fff;
+  border: 2px solid #000;
+  padding: 24px 20px 16px;
+  margin-bottom: 28px;
+  position: relative;
+}
+
+.chart-wrap.chart-empty {
+  padding: 48px 24px;
+}
+
+.chart-empty-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: #bbb;
+}
+
+.chart-empty-icon {
+  font-size: 28px;
+  color: #C9A84C;
+}
+
+.chart-empty-inner p {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e0e0dc;
+}
+
+.chart-title {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.chart-title-sub {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: #888;
+}
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #666;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-dot.pos { background: #4E7A5A; }
+.legend-dot.neg { background: #8B3A3A; }
+.legend-dot.br { background: #C9A84C; }
+
+.chart-svg {
+  width: 100%;
+  display: block;
+}
+
+.chart-bars {
+  margin-top: 4px;
+  border-top: 1px dashed #e0e0dc;
+  padding-top: 0;
+}
+
 .notes-card {
   background: #fff;
   border: 2px solid #000;
