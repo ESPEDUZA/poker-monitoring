@@ -260,7 +260,7 @@ function _calcSessionStats(hands) {
       const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
       const pot = h.allInPot
       const actualChips = h.winners.some(w => w.player === h.hero) ? pot : 0
-      cev += ((actualChips - eq * pot) / totalChips) * tn.prizePool
+      cev += actualChips - eq * pot
       allin++
     }
     cevTotal += cev; allinTotal += allin; buyInTotal += tn.buyIn; prizeTotal += tn.heroPrize
@@ -1061,7 +1061,7 @@ export default function App() {
                           </div>
                           <div className="hh-sc-right">
                             <div className={`hh-sc-result ${s.netResult >= 0 ? 'hh-pos' : 'hh-neg'}`}>{s.netResult >= 0 ? '+' : ''}{s.netResult.toFixed(2)}€</div>
-                            <div className={`hh-sc-cev ${s.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>CEV {s.cevDiff >= 0 ? '+' : ''}{s.cevDiff.toFixed(2)}€</div>
+                            <div className={`hh-sc-cev ${s.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>CEV {s.cevDiff >= 0 ? '+' : ''}{Math.round(s.cevDiff)} chips</div>
                           </div>
                         </div>
                       )
@@ -1105,7 +1105,9 @@ export default function App() {
 }
 
 function HHDetail({ session: s, onDelete }) {
-  const fmt = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '€'
+  const fmtEur = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '€'
+  const fmtCev = v => (v >= 0 ? '+' : '') + Math.round(v) + ' chips'
+  const fmtTournCev = v => (v >= 0 ? '+' : '') + Math.round(v) + ' ch'
   return (
     <div className="hh-detail">
       <div className="hh-detail-date">
@@ -1115,12 +1117,12 @@ function HHDetail({ session: s, onDelete }) {
       <div className="hh-stat-grid">
         <div className="hh-stat-hero">
           <div className="hh-stat-label">CEV TOTAL</div>
-          <div className={`hh-stat-big ${s.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>{fmt(s.cevDiff)}</div>
+          <div className={`hh-stat-big ${s.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>{fmtCev(s.cevDiff)}</div>
           <div className="hh-stat-sub">{s.allinSpots} SPOTS ALL-IN CALCULÉS</div>
         </div>
         <div className="hh-stat-card">
           <div className="hh-stat-label">RÉSULTAT NET</div>
-          <div className={`hh-stat-val ${s.netResult >= 0 ? 'hh-pos' : 'hh-neg'}`}>{fmt(s.netResult)}</div>
+          <div className={`hh-stat-val ${s.netResult >= 0 ? 'hh-pos' : 'hh-neg'}`}>{fmtEur(s.netResult)}</div>
         </div>
         <div className="hh-stat-card">
           <div className="hh-stat-label">WIN RATE</div>
@@ -1134,6 +1136,7 @@ function HHDetail({ session: s, onDelete }) {
           <div className="hh-stat-label">PRIZE WON</div>
           <div className="hh-stat-val">{s.totalPrizeWon.toFixed(2)}€</div>
         </div>
+
         <div className="hh-stat-card">
           <div className="hh-stat-label">TOURNOIS</div>
           <div className="hh-stat-val">{s.totalTournaments}</div>
@@ -1152,9 +1155,9 @@ function HHDetail({ session: s, onDelete }) {
                   <span className="hh-tourn-hands">{t.handCount} MAINS</span>
                 </div>
                 <div className="hh-tourn-right">
-                  {t.allinSpots > 0 && <span className={`hh-tourn-cev ${t.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>CEV {fmt(t.cevDiff)}</span>}
+                  {t.allinSpots > 0 && <span className={`hh-tourn-cev ${t.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>CEV {fmtTournCev(t.cevDiff)}</span>}
                   <span className={`hh-tourn-result ${t.heroWon ? 'hh-pos' : 'hh-neg'}`}>
-                    {t.heroWon ? fmt(t.heroPrize - t.buyIn) : fmt(-t.buyIn)}
+                    {t.heroWon ? fmtEur(t.heroPrize - t.buyIn) : fmtEur(-t.buyIn)}
                   </span>
                 </div>
               </div>
