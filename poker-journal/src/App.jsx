@@ -735,7 +735,7 @@ export default function App() {
 
               <MetricCard label="SESSIONS" value={m.sessionsPlayed} onChange={v => updateMonthly('sessionsPlayed', Number(v))} color="#00C853" />
               <MetricCard label="HEURES À LA TABLE" value={m.hoursPlayed} onChange={v => updateMonthly('hoursPlayed', Number(v))} color="#FFD100" />
-              <MetricCard label='"HEURES D\'ÉTUDE"' value={m.studyHours} onChange={v => updateMonthly('studyHours', Number(v))} color="#651FFF" />
+              <MetricCard label="HEURES D'ÉTUDE" value={m.studyHours} onChange={v => updateMonthly('studyHours', Number(v))} color="#651FFF" />
               <MetricCard label="BANKROLL DÉBUT (€)" value={m.bankrollStart} onChange={v => updateMonthly('bankrollStart', Number(v))} color="#00B8D9" />
               <MetricCard label="BANKROLL FIN (€)" value={m.bankrollEnd} onChange={v => updateMonthly('bankrollEnd', Number(v))} color="#E91E63" />
 
