@@ -272,6 +272,7 @@ function _calcSessionStats(hands) {
       // Determine winner via hand evaluation (SUMMARY text parsing is unreliable)
       let actualChips
       const finalBoard = h.board
+      if (allin < 3) console.log('[CEV]', { id: h.handId, hero: h.hero, hCards: hCards.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), vCards: vs.cards.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), boardAtAllin: (h.boardAtAllin||[]).map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), board: finalBoard.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), boardLen: finalBoard.length, pot, eq, totalChips, prizePool: tn.prizePool })
       if (finalBoard.length >= 5) {
         const heroScore = _best5([...hCards, ...finalBoard])
         const villScore = _best5([...vs.cards, ...finalBoard])
