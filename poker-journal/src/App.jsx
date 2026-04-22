@@ -263,7 +263,18 @@ function _calcSessionStats(hands) {
       const hCards = hs.cards
       const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
       const pot = h.allInPot
-      const actualChips = h.winners.some(w => w.player === h.hero) ? pot : 0
+      // Determine winner via hand evaluation (SUMMARY text parsing is unreliable)
+      let actualChips
+      const finalBoard = h.board
+      if (finalBoard.length >= 5) {
+        const heroScore = _best5([...hCards, ...finalBoard])
+        const villScore = _best5([...vs.cards, ...finalBoard])
+        if (heroScore > villScore) actualChips = pot
+        else if (heroScore < villScore) actualChips = 0
+        else actualChips = pot * 0.5
+      } else {
+        actualChips = h.winners.some(w => w.player === h.hero) ? pot : 0
+      }
       // EV diff in chips: how many chips above/below equity expectation
       const diffChips = actualChips - eq * pot
       // EV diff in €: chip diff converted via prize pool / total chips (linear in winner-take-all)
