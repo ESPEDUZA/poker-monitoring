@@ -158,7 +158,7 @@ function _parseHand(text) {
     blinds: { sb: 0, bb: 0 },
     players: [], hero: null, heroCards: [],
     board: [], boardAtAllin: [],
-    allInStreet: null, allInPot: 0, heroAllin: false,
+    allInStreet: null, allInPot: 0, allinDetected: false,
     showdown: [], winners: [], heroFinish: null,
   }
   let sec = 'header', boardFlop = [], boardTurn = null, boardRiver = null
@@ -210,11 +210,10 @@ function _parseHand(text) {
       if (m && m[1].trim() === hand.hero) hand.heroCards = _parseCardArr(m[2])
     }
 
-    if (['preflop', 'flop', 'turn', 'river'].includes(sec) && hand.hero && !hand.heroAllin) {
-      // Match both "Hero:" and "Hero [ts]:" formats (timestamps stripped above, but colon may follow directly)
-      const lineL = line.toLowerCase()
-      if (lineL.includes('and is all-in') && lineL.startsWith(hand.hero.toLowerCase())) {
-        hand.heroAllin = true
+    // Detect any all-in in the hand (hero OR villain) — CEV needs showdown, not who shoved
+    if (['preflop', 'flop', 'turn', 'river'].includes(sec) && !hand.allinDetected) {
+      if (/all[\s\-]?in/i.test(line)) {
+        hand.allinDetected = true
         hand.allInStreet = sec
         hand.boardAtAllin = [...boardFlop, ...(boardTurn ? [boardTurn] : []), ...(boardRiver ? [boardRiver] : [])]
       }
@@ -256,12 +255,12 @@ function _calcSessionStats(hands) {
     const totalChips = tn.hands[0]?.players.reduce((s, p) => s + p.chips, 0) || 500
     let evEur = 0, evChips = 0, allin = 0
     for (const h of tn.hands) {
-      if (!h.heroAllin || !h.hero) continue
-      const vs = h.showdown.find(s => s.player !== h.hero)
-      if (!vs || vs.cards.length < 2) continue
+      // Need: all-in detected + both players visible at showdown
+      if (!h.allinDetected || !h.hero) continue
       const hs = h.showdown.find(s => s.player === h.hero)
-      const hCards = (hs?.cards?.length >= 2) ? hs.cards : h.heroCards
-      if (hCards.length < 2) continue
+      const vs = h.showdown.find(s => s.player !== h.hero)
+      if (!hs || hs.cards.length < 2 || !vs || vs.cards.length < 2) continue
+      const hCards = hs.cards
       const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
       const pot = h.allInPot
       const actualChips = h.winners.some(w => w.player === h.hero) ? pot : 0
