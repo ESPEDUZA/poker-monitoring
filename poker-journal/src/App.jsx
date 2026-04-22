@@ -245,11 +245,12 @@ function _calcSessionStats(hands) {
     tourns[gid].hands.push(h)
     if (h.heroFinish) { tourns[gid].heroPrize = h.heroFinish.prize; tourns[gid].heroWon = true }
   }
-  let cevTotal = 0, allinTotal = 0, buyInTotal = 0, prizeTotal = 0, wonCount = 0
+  let evEurTotal = 0, evChipsTotal = 0, allinTotal = 0, buyInTotal = 0, prizeTotal = 0, wonCount = 0
   const tList = []
   for (const [gid, tn] of Object.entries(tourns)) {
+    // Sum all player stacks = conserved total throughout tournament
     const totalChips = tn.hands[0]?.players.reduce((s, p) => s + p.chips, 0) || 500
-    let cev = 0, allin = 0
+    let evEur = 0, evChips = 0, allin = 0
     for (const h of tn.hands) {
       if (!h.heroAllin || !h.hero) continue
       const vs = h.showdown.find(s => s.player !== h.hero)
@@ -260,15 +261,37 @@ function _calcSessionStats(hands) {
       const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
       const pot = h.allInPot
       const actualChips = h.winners.some(w => w.player === h.hero) ? pot : 0
-      cev += actualChips - eq * pot
+      // EV diff in chips: how many chips above/below equity expectation
+      const diffChips = actualChips - eq * pot
+      // EV diff in €: chip diff converted via prize pool / total chips (linear in winner-take-all)
+      const diffEur = (diffChips / totalChips) * tn.prizePool
+      evChips += diffChips
+      evEur += diffEur
       allin++
     }
-    cevTotal += cev; allinTotal += allin; buyInTotal += tn.buyIn; prizeTotal += tn.heroPrize
+    evEurTotal += evEur; evChipsTotal += evChips; allinTotal += allin
+    buyInTotal += tn.buyIn; prizeTotal += tn.heroPrize
     if (tn.heroWon) wonCount++
-    tList.push({ gameId: gid, prizePool: tn.prizePool, buyIn: tn.buyIn, multiplier: tn.multiplier, handCount: tn.hands.length, allinSpots: allin, cevDiff: cev, heroWon: tn.heroWon, heroPrize: tn.heroPrize })
+    tList.push({
+      gameId: gid, date: tn.hands[0]?.date || null,
+      prizePool: tn.prizePool, buyIn: tn.buyIn, multiplier: tn.multiplier,
+      handCount: tn.hands.length, allinSpots: allin,
+      evChips, evEur, heroWon: tn.heroWon, heroPrize: tn.heroPrize,
+    })
   }
   const n = Object.keys(tourns).length
-  return { importedAt: new Date().toISOString(), totalHands: hands.length, totalTournaments: n, totalBuyIn: buyInTotal, totalPrizeWon: prizeTotal, netResult: prizeTotal - buyInTotal, winRate: n ? wonCount / n : 0, allinSpots: allinTotal, cevDiff: cevTotal, tournaments: tList }
+  return {
+    importedAt: new Date().toISOString(),
+    totalHands: hands.length, totalTournaments: n,
+    totalBuyIn: buyInTotal, totalPrizeWon: prizeTotal,
+    netResult: prizeTotal - buyInTotal,
+    winRate: n ? wonCount / n : 0,
+    allinSpots: allinTotal,
+    evChips: evChipsTotal,
+    evEur: evEurTotal,
+    chipEvPerTourn: n ? evChipsTotal / n : 0,
+    tournaments: tList,
+  }
 }
 
 export default function App() {
@@ -1061,7 +1084,7 @@ export default function App() {
                           </div>
                           <div className="hh-sc-right">
                             <div className={`hh-sc-result ${s.netResult >= 0 ? 'hh-pos' : 'hh-neg'}`}>{s.netResult >= 0 ? '+' : ''}{s.netResult.toFixed(2)}€</div>
-                            <div className={`hh-sc-cev ${s.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>CEV {s.cevDiff >= 0 ? '+' : ''}{Math.round(s.cevDiff)} chips</div>
+                            <div className={`hh-sc-cev ${(s.evEur ?? s.cevDiff ?? 0) >= 0 ? 'hh-pos' : 'hh-neg'}`}>EV {(s.evEur ?? s.cevDiff ?? 0) >= 0 ? '+' : ''}{(s.evEur ?? s.cevDiff ?? 0).toFixed(2)}€</div>
                           </div>
                         </div>
                       )
@@ -1105,63 +1128,85 @@ export default function App() {
 }
 
 function HHDetail({ session: s, onDelete }) {
-  const fmtEur = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '€'
-  const fmtCev = v => (v >= 0 ? '+' : '') + Math.round(v) + ' chips'
-  const fmtTournCev = v => (v >= 0 ? '+' : '') + Math.round(v) + ' ch'
+  const e = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '€'
+  const ch = v => (v >= 0 ? '+' : '') + Math.round(v)
+  const evEur = s.evEur ?? s.cevDiff ?? 0
+  const evChips = s.evChips ?? 0
+  const chipEvT = s.chipEvPerTourn ?? (s.totalTournaments ? evChips / s.totalTournaments : 0)
+
   return (
     <div className="hh-detail">
-      <div className="hh-detail-date">
-        IMPORTÉ LE {new Date(s.importedAt).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+      {/* Summary bar — mirrors the reference software top row */}
+      <div className="hh-summary-bar">
+        <div className="hh-sum-cell">
+          <div className="hh-sum-label">TOURNOIS</div>
+          <div className="hh-sum-val">{s.totalTournaments}</div>
+        </div>
+        <div className="hh-sum-cell">
+          <div className="hh-sum-label">EV (€)</div>
+          <div className={`hh-sum-val ${evEur >= 0 ? 'hh-pos' : 'hh-neg'}`}>{e(evEur)}</div>
+        </div>
+        <div className="hh-sum-cell">
+          <div className="hh-sum-label">EV CHIPS</div>
+          <div className={`hh-sum-val ${evChips >= 0 ? 'hh-pos' : 'hh-neg'}`}>{ch(evChips)}</div>
+        </div>
+        <div className="hh-sum-cell">
+          <div className="hh-sum-label">EV/TOURNOI</div>
+          <div className={`hh-sum-val ${chipEvT >= 0 ? 'hh-pos' : 'hh-neg'}`}>{chipEvT >= 0 ? '+' : ''}{chipEvT.toFixed(1)}</div>
+        </div>
+        <div className="hh-sum-cell">
+          <div className="hh-sum-label">NET WON</div>
+          <div className={`hh-sum-val ${s.netResult >= 0 ? 'hh-pos' : 'hh-neg'}`}>{e(s.netResult)}</div>
+        </div>
+        <div className="hh-sum-cell">
+          <div className="hh-sum-label">WIN RATE</div>
+          <div className="hh-sum-val">{(s.winRate * 100).toFixed(1)}%</div>
+        </div>
+        <div className="hh-sum-cell">
+          <div className="hh-sum-label">MAINS</div>
+          <div className="hh-sum-val">{s.totalHands}</div>
+        </div>
+        <div className="hh-sum-cell">
+          <div className="hh-sum-label">ALL-INS</div>
+          <div className="hh-sum-val">{s.allinSpots}</div>
+        </div>
       </div>
 
-      <div className="hh-stat-grid">
-        <div className="hh-stat-hero">
-          <div className="hh-stat-label">CEV TOTAL</div>
-          <div className={`hh-stat-big ${s.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>{fmtCev(s.cevDiff)}</div>
-          <div className="hh-stat-sub">{s.allinSpots} SPOTS ALL-IN CALCULÉS</div>
-        </div>
-        <div className="hh-stat-card">
-          <div className="hh-stat-label">RÉSULTAT NET</div>
-          <div className={`hh-stat-val ${s.netResult >= 0 ? 'hh-pos' : 'hh-neg'}`}>{fmtEur(s.netResult)}</div>
-        </div>
-        <div className="hh-stat-card">
-          <div className="hh-stat-label">WIN RATE</div>
-          <div className="hh-stat-val">{(s.winRate * 100).toFixed(1)}%</div>
-        </div>
-        <div className="hh-stat-card">
-          <div className="hh-stat-label">BUY-IN TOTAL</div>
-          <div className="hh-stat-val">{s.totalBuyIn.toFixed(2)}€</div>
-        </div>
-        <div className="hh-stat-card">
-          <div className="hh-stat-label">PRIZE WON</div>
-          <div className="hh-stat-val">{s.totalPrizeWon.toFixed(2)}€</div>
-        </div>
-
-        <div className="hh-stat-card">
-          <div className="hh-stat-label">TOURNOIS</div>
-          <div className="hh-stat-val">{s.totalTournaments}</div>
-        </div>
-      </div>
-
+      {/* Per-tournament table */}
       {s.tournaments?.length > 0 && (
         <div className="hh-tourns">
-          <div className="hh-tourns-title">DÉTAIL PAR TOURNOI — {s.tournaments.length}</div>
-          <div className="hh-tourns-list">
-            {s.tournaments.map((t, i) => (
-              <div key={i} className={`hh-tourn-row ${t.heroWon ? 'won' : ''}`}>
-                <div className="hh-tourn-left">
-                  <span className="hh-tourn-mul">x{t.multiplier}</span>
-                  <span className="hh-tourn-pool">{t.prizePool.toFixed(0)}€</span>
-                  <span className="hh-tourn-hands">{t.handCount} MAINS</span>
-                </div>
-                <div className="hh-tourn-right">
-                  {t.allinSpots > 0 && <span className={`hh-tourn-cev ${t.cevDiff >= 0 ? 'hh-pos' : 'hh-neg'}`}>CEV {fmtTournCev(t.cevDiff)}</span>}
-                  <span className={`hh-tourn-result ${t.heroWon ? 'hh-pos' : 'hh-neg'}`}>
-                    {t.heroWon ? fmtEur(t.heroPrize - t.buyIn) : fmtEur(-t.buyIn)}
-                  </span>
-                </div>
-              </div>
-            ))}
+          <div className="hh-tbl-wrap">
+            <table className="hh-tbl">
+              <thead>
+                <tr>
+                  <th>STAKE</th>
+                  <th>POOL</th>
+                  <th className="right">NET WON</th>
+                  <th className="right">EV (€)</th>
+                  <th className="right">EV CHIPS</th>
+                  <th className="right">MAINS</th>
+                  <th className="right">ALLIN</th>
+                </tr>
+              </thead>
+              <tbody>
+                {s.tournaments.map((t, i) => {
+                  const tEvEur = t.evEur ?? t.cevDiff ?? 0
+                  const tEvCh = t.evChips ?? 0
+                  const net = t.heroWon ? t.heroPrize - t.buyIn : -t.buyIn
+                  return (
+                    <tr key={i} className={t.heroWon ? 'won' : ''}>
+                      <td>{t.buyIn.toFixed(0)}€</td>
+                      <td><span className="hh-mul">x{t.multiplier}</span> {t.prizePool.toFixed(0)}€</td>
+                      <td className={`right ${net >= 0 ? 'hh-pos' : 'hh-neg'}`}>{e(net)}</td>
+                      <td className={`right ${tEvEur >= 0 ? 'hh-pos' : 'hh-neg'}`}>{t.allinSpots > 0 ? e(tEvEur) : '—'}</td>
+                      <td className={`right ${tEvCh >= 0 ? 'hh-pos' : 'hh-neg'}`}>{t.allinSpots > 0 ? ch(tEvCh) : '—'}</td>
+                      <td className="right dim">{t.handCount}</td>
+                      <td className="right dim">{t.allinSpots}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -2954,60 +2999,48 @@ const css = `
   font-weight: 700; letter-spacing: 0.05em;
 }
 
-.hh-detail { display: flex; flex-direction: column; gap: 32px; }
-.hh-detail-date {
-  font-family: 'JetBrains Mono', monospace; font-size: 10px;
-  color: #44445A; letter-spacing: 0.15em;
+.hh-detail { display: flex; flex-direction: column; gap: 24px; }
+
+/* Summary bar */
+.hh-summary-bar {
+  display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px;
 }
-.hh-stat-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 2px; }
-.hh-stat-hero {
-  background: #13131A; border: 1px solid #C9A84C33; padding: 32px;
-  grid-row: span 2; display: flex; flex-direction: column; gap: 8px;
+.hh-sum-cell {
+  background: #0D0D14; border: 1px solid #1C1C26; padding: 16px 12px;
+  display: flex; flex-direction: column; gap: 6px;
 }
-.hh-stat-card {
-  background: #0D0D14; border: 1px solid #1C1C26; padding: 20px;
-  display: flex; flex-direction: column; gap: 8px;
-}
-.hh-stat-label {
-  font-family: 'JetBrains Mono', monospace; font-size: 9px;
+.hh-sum-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 8px;
   font-weight: 700; letter-spacing: 0.2em; color: #44445A;
 }
-.hh-stat-big {
-  font-family: 'JetBrains Mono', monospace; font-size: 38px;
-  font-weight: 900; letter-spacing: -0.03em; line-height: 1;
-}
-.hh-stat-val {
-  font-family: 'JetBrains Mono', monospace; font-size: 22px;
+.hh-sum-val {
+  font-family: 'JetBrains Mono', monospace; font-size: 16px;
   font-weight: 900; letter-spacing: -0.02em; color: #ECECF0;
 }
-.hh-stat-sub {
-  font-family: 'JetBrains Mono', monospace; font-size: 9px;
-  color: #44445A; letter-spacing: 0.1em;
-}
 
-.hh-tourns-title {
-  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
-  letter-spacing: 0.2em; color: #44445A; padding-bottom: 12px;
-  border-bottom: 1px solid #1C1C26; margin-bottom: 4px;
+/* Tournament table */
+.hh-tbl-wrap { overflow-x: auto; }
+.hh-tbl {
+  width: 100%; border-collapse: collapse;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
 }
-.hh-tourns-list { display: flex; flex-direction: column; gap: 2px; }
-.hh-tourn-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 16px; border: 1px solid #1C1C26; background: #0D0D14;
-  border-left: 2px solid #1C1C26;
+.hh-tbl thead tr {
+  border-bottom: 1px solid #2A2A3A;
 }
-.hh-tourn-row.won { border-left-color: #3E9E6E; }
-.hh-tourn-left {
-  display: flex; align-items: center; gap: 16px;
-  font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8888AA;
+.hh-tbl th {
+  padding: 10px 12px; text-align: left; font-size: 9px;
+  font-weight: 700; letter-spacing: 0.15em; color: #44445A;
 }
-.hh-tourn-mul { color: #C9A84C; font-weight: 700; }
-.hh-tourn-pool { color: #ECECF0; font-weight: 700; }
-.hh-tourn-right {
-  display: flex; align-items: center; gap: 20px;
-  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+.hh-tbl th.right { text-align: right; }
+.hh-tbl td {
+  padding: 9px 12px; border-bottom: 1px solid #13131A;
+  color: #ECECF0; font-weight: 600;
 }
-.hh-tourn-result { font-size: 13px; }
+.hh-tbl td.right { text-align: right; }
+.hh-tbl td.dim { color: #44445A; }
+.hh-tbl tr.won td { background: #0D130F; }
+.hh-tbl tr:hover td { background: #13131A; }
+.hh-mul { color: #C9A84C; font-weight: 700; margin-right: 4px; }
 
 .hh-delete-btn {
   align-self: flex-start; background: none; border: 1px solid #2A2A3A;
