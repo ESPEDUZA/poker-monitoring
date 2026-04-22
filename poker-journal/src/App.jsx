@@ -149,7 +149,8 @@ function _calcEquity(h, v, board, n = 1500) {
 }
 
 function _parseHand(text) {
-  const lines = text.trim().split('\n').map(l => l.trim()).filter(Boolean)
+  // Strip iPoker inline timestamps [HH:MM:SS] or [DD/MM/YYYY HH:MM:SS] — contains only digits/:/ /- never letters, so card brackets like [Qh 5s] are safe
+  const lines = text.trim().split('\n').map(l => l.replace(/\[[\d: \/\-]+\]/g, '').replace(/\s+/g, ' ').trim()).filter(Boolean)
   if (!lines.length) return null
   const hand = {
     handId: null, gameId: null, date: null,
@@ -210,7 +211,9 @@ function _parseHand(text) {
     }
 
     if (['preflop', 'flop', 'turn', 'river'].includes(sec) && hand.hero && !hand.heroAllin) {
-      if (line.toLowerCase().includes('and is all-in') && line.startsWith(hand.hero + ':')) {
+      // Match both "Hero:" and "Hero [ts]:" formats (timestamps stripped above, but colon may follow directly)
+      const lineL = line.toLowerCase()
+      if (lineL.includes('and is all-in') && lineL.startsWith(hand.hero.toLowerCase())) {
         hand.heroAllin = true
         hand.allInStreet = sec
         hand.boardAtAllin = [...boardFlop, ...(boardTurn ? [boardTurn] : []), ...(boardRiver ? [boardRiver] : [])]
@@ -218,14 +221,15 @@ function _parseHand(text) {
     }
 
     if (sec === 'showdown') {
-      const m = line.match(/^(.+?)\s+shows\s+\[([^\]]+)\]/)
-      if (m) hand.showdown.push({ player: m[1].trim(), cards: _parseCardArr(m[2]) })
+      // "PlayerName shows [cards]" or "PlayerName: shows [cards]"
+      const m = line.match(/^(.+?):?\s+shows\s+\[([^\]]+)\]/)
+      if (m) hand.showdown.push({ player: m[1].replace(/:$/, '').trim(), cards: _parseCardArr(m[2]) })
     }
 
     if (sec === 'summary') {
-      const wm = line.match(/^(.+?)\s+wins\s+(?:main pot|side pot)\s+of\s+(\d+)/)
+      const wm = line.match(/^(.+?)\s+wins\s+(?:main pot|side pot)\s+of\s+(\d+)/i)
       if (wm) hand.winners.push({ player: wm[1].trim(), amount: +wm[2] })
-      const fm = line.match(/^(.+?)\s+finished\s+\d+[a-z]+\s+and\s+wins\s+([\d.]+)/)
+      const fm = line.match(/^(.+?)\s+finished\s+\d+\w*\s+and\s+wins\s+([\d.]+)/i)
       if (fm && hand.hero && fm[1].trim() === hand.hero) hand.heroFinish = { prize: parseFloat(fm[2]) }
     }
   }
