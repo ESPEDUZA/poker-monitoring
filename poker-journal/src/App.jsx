@@ -225,6 +225,22 @@ function _parseHand(text) {
       }
     }
 
+    // Board cards on a separate line after *** TURN/RIVER *** (some iPoker variants)
+    if (sec === 'flop' && !boardFlop.length) {
+      const m = line.match(/^\[([^\]]+)\]/)
+      if (m) { const cs = _parseCardArr(m[1]); if (cs.length >= 3) boardFlop = cs.slice(0, 3) }
+    }
+    if (sec === 'turn' && boardTurn === null) {
+      const ms = [...line.matchAll(/\[([^\]]+)\]/g)]
+      if (ms.length >= 2) boardTurn = _parseCardArr(ms[ms.length - 1][1])[0]
+      else if (ms.length === 1) { const cs = _parseCardArr(ms[0][1]); if (cs.length) boardTurn = cs[cs.length - 1] }
+    }
+    if (sec === 'river' && boardRiver === null) {
+      const ms = [...line.matchAll(/\[([^\]]+)\]/g)]
+      if (ms.length >= 2) boardRiver = _parseCardArr(ms[ms.length - 1][1])[0]
+      else if (ms.length === 1) { const cs = _parseCardArr(ms[0][1]); if (cs.length) boardRiver = cs[cs.length - 1] }
+    }
+
     if (sec === 'showdown') {
       // "PlayerName shows [cards]" or "PlayerName: shows [cards]"
       const m = line.match(/^(.+?):?\s+shows\s+\[([^\]]+)\]/)
@@ -270,10 +286,10 @@ function _calcSessionStats(hands) {
       const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
       const pot = h.allInPot
       // Determine winner via hand evaluation (SUMMARY text parsing is unreliable)
-      let actualChips
+      let actualChips, usedEval = false
       const finalBoard = h.board
-      if (allin < 3) console.log('[CEV]', { id: h.handId, hero: h.hero, hCards: hCards.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), vCards: vs.cards.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), boardAtAllin: (h.boardAtAllin||[]).map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), board: finalBoard.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), boardLen: finalBoard.length, pot, eq, totalChips, prizePool: tn.prizePool })
       if (finalBoard.length >= 5) {
+        usedEval = true
         const heroScore = _best5([...hCards, ...finalBoard])
         const villScore = _best5([...vs.cards, ...finalBoard])
         if (heroScore > villScore) actualChips = pot
@@ -282,6 +298,7 @@ function _calcSessionStats(hands) {
       } else {
         actualChips = h.winners.some(w => w.player === h.hero) ? pot : 0
       }
+      if (allin < 2) console.log('[CEV hand]', { id: h.handId, hCards: hCards.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), vCards: vs.cards.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), board: finalBoard.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), boardLen: finalBoard.length, pot, eq, actualChips, usedEval })
       // EV diff in chips: how many chips above/below equity expectation
       const diffChips = actualChips - eq * pot
       // EV diff in €: chip diff converted via prize pool / total chips (linear in winner-take-all)
@@ -290,6 +307,8 @@ function _calcSessionStats(hands) {
       evEur += diffEur
       allin++
     }
+    const incomplete = tn.hands.filter(h => h.allinDetected && h.hero && h.showdown.find(s=>s.player===h.hero) && h.board.length < 5).length
+    if (allin > 0) console.log('[CEV tourn]', { gid, allin, evChips: Math.round(evChips), evEur: evEur.toFixed(2), incompleteBoards: incomplete, totalChips, prizePool: tn.prizePool })
     evEurTotal += evEur; evChipsTotal += evChips; allinTotal += allin
     buyInTotal += tn.buyIn; prizeTotal += tn.heroPrize
     if (tn.heroWon) wonCount++
