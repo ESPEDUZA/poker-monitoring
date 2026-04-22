@@ -174,12 +174,18 @@ function _parseHand(text) {
     }
     if (line.startsWith('*** TURN ***')) {
       sec = 'turn'
-      const m = line.match(/\[([^\]]+)\]/); if (m) { const cs = _parseCardArr(m[1]); boardTurn = cs[cs.length - 1] }
+      // Format: *** TURN *** [existing board] [new card] — take the LAST bracket
+      const ms = [...line.matchAll(/\[([^\]]+)\]/g)]
+      if (ms.length >= 2) boardTurn = _parseCardArr(ms[ms.length - 1][1])[0]
+      else if (ms.length === 1) { const cs = _parseCardArr(ms[0][1]); boardTurn = cs[cs.length - 1] }
       continue
     }
     if (line.startsWith('*** RIVER ***')) {
       sec = 'river'
-      const m = line.match(/\[([^\]]+)\]/); if (m) { const cs = _parseCardArr(m[1]); boardRiver = cs[cs.length - 1] }
+      // Format: *** RIVER *** [existing board] [new card] — take the LAST bracket
+      const ms = [...line.matchAll(/\[([^\]]+)\]/g)]
+      if (ms.length >= 2) boardRiver = _parseCardArr(ms[ms.length - 1][1])[0]
+      else if (ms.length === 1) { const cs = _parseCardArr(ms[0][1]); boardRiver = cs[cs.length - 1] }
       continue
     }
     if (line.startsWith('*** SHOWDOWN ***')) { sec = 'showdown'; continue }
