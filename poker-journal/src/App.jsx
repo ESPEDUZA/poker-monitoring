@@ -285,30 +285,14 @@ function _calcSessionStats(hands) {
       const hCards = hs.cards
       const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
       const pot = h.allInPot
-      // Determine winner via hand evaluation (SUMMARY text parsing is unreliable)
-      let actualChips, usedEval = false
-      const finalBoard = h.board
-      if (finalBoard.length >= 5) {
-        usedEval = true
-        const heroScore = _best5([...hCards, ...finalBoard])
-        const villScore = _best5([...vs.cards, ...finalBoard])
-        if (heroScore > villScore) actualChips = pot
-        else if (heroScore < villScore) actualChips = 0
-        else actualChips = pot * 0.5
-      } else {
-        actualChips = h.winners.some(w => w.player === h.hero) ? pot : 0
-      }
-      if (allin < 2) console.log('[CEV hand]', { id: h.handId, hCards: hCards.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), vCards: vs.cards.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), board: finalBoard.map(c=>_RANKS[c.rank]+'SHDC'[c.suit]), boardLen: finalBoard.length, pot, eq, actualChips, usedEval })
-      // EV diff in chips: how many chips above/below equity expectation
-      const diffChips = actualChips - eq * pot
-      // EV diff in €: chip diff converted via prize pool / total chips (linear in winner-take-all)
+      // CEV = quality of the all-in spot: how much above 50% equity hero had × pot
+      // Positive = hero was favorite, negative = hero was underdog
+      const diffChips = pot * (eq - 0.5)
       const diffEur = (diffChips / totalChips) * tn.prizePool
       evChips += diffChips
       evEur += diffEur
       allin++
     }
-    const incomplete = tn.hands.filter(h => h.allinDetected && h.hero && h.showdown.find(s=>s.player===h.hero) && h.board.length < 5).length
-    if (allin > 0) console.log('[CEV tourn]', { gid, allin, evChips: Math.round(evChips), evEur: evEur.toFixed(2), incompleteBoards: incomplete, totalChips, prizePool: tn.prizePool })
     evEurTotal += evEur; evChipsTotal += evChips; allinTotal += allin
     buyInTotal += tn.buyIn; prizeTotal += tn.heroPrize
     if (tn.heroWon) wonCount++
