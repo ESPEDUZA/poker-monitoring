@@ -285,10 +285,16 @@ function _calcSessionStats(hands) {
       const hCards = hs.cards
       const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
       const pot = h.allInPot
-      // CEV = quality of the all-in spot: how much above 50% equity hero had × pot
-      // Positive = hero was favorite, negative = hero was underdog
       const diffChips = pot * (eq - 0.5)
       const diffEur = (diffChips / totalChips) * tn.prizePool
+      console.log('[CEV]', {
+        gid: gid.slice(-6), hand: h.handId?.slice(-6),
+        nShowdown: h.showdown.length,
+        hCards: hCards.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
+        vCards: vs.cards.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
+        boardAtAllin: (h.boardAtAllin || []).map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
+        pot, eq: +eq.toFixed(3), diffChips: +diffChips.toFixed(1)
+      })
       evChips += diffChips
       evEur += diffEur
       allin++
