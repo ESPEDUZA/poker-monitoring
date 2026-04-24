@@ -130,6 +130,12 @@ function _makeDeck(exclude) {
   return d
 }
 
+// ── Opus equity engine (browser port) ─────────────────────────────────────
+// Cards are integers 0-51: card = suit * 13 + rank  (rank 0=2 … 12=A, suit 0=S/1=H/2=D/3=C)
+function _cardToInt(c) { return c.suit * 13 + c.rank }
+// evaluate7: lower score = better hand (Opus convention, uses existing _best5 which is higher=better)
+function _evaluate7(ints) { return -_best5(ints.map(c => ({ suit: Math.floor(c / 13), rank: c % 13 }))) }
+
 function _nChooseK(n, k) {
   if (k < 0 || k > n) return 0
   if (k === 0 || k === n) return 1
@@ -139,70 +145,72 @@ function _nChooseK(n, k) {
   return Math.round(r)
 }
 
-function _enumCombos(deck, k, cb) {
-  const n = deck.length
-  if (k === 0) { cb([]); return }
-  if (k === 1) { for (let i = 0; i < n; i++) cb([deck[i]]); return }
-  if (k === 2) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) cb([deck[i], deck[j]]); return }
-  if (k === 3) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) cb([deck[i], deck[j], deck[m]]); return }
-  if (k === 4) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) for (let p = m+1; p < n; p++) cb([deck[i], deck[j], deck[m], deck[p]]); return }
-  if (k === 5) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) for (let p = m+1; p < n; p++) for (let q = p+1; q < n; q++) cb([deck[i], deck[j], deck[m], deck[p], deck[q]]); return }
+function _enumerate5(deck, k, cb) {
+  const n = deck.length; let count = 0
+  if (k === 0) { cb([]); return 1 }
+  if (k === 1) { for (let i = 0; i < n; i++) { cb([deck[i]]); count++ } return count }
+  if (k === 2) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) { cb([deck[i], deck[j]]); count++ } return count }
+  if (k === 3) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) { cb([deck[i], deck[j], deck[m]]); count++ } return count }
+  if (k === 4) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) for (let p = m+1; p < n; p++) { cb([deck[i], deck[j], deck[m], deck[p]]); count++ } return count }
+  if (k === 5) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) for (let p = m+1; p < n; p++) for (let q = p+1; q < n; q++) { cb([deck[i], deck[j], deck[m], deck[p], deck[q]]); count++ } return count }
+  return count
 }
 
-function _calcEquity(h, v, board, n = 1500) {
-  const deck = _makeDeck([...h, ...v, ...board])
-  const need = 5 - board.length
-  if (need <= 0) {
-    const hs = _best5([...h, ...board]), vs = _best5([...v, ...board])
-    return hs > vs ? 1 : hs < vs ? 0 : 0.5
+function _sampleBoard(deck, k, existingBoard) {
+  const pool = deck.slice()
+  for (let j = 0; j < k; j++) { const r = j + Math.floor(Math.random() * (pool.length - j));[pool[j], pool[r]] = [pool[r], pool[j]] }
+  return [...existingBoard, ...pool.slice(0, k)]
+}
+
+// equity2 — exact port of Opus equity2, cards = int arrays
+function _equity2(hero, villain, board) {
+  const used = new Set([...hero, ...villain, ...board])
+  const deck = []; for (let c = 0; c < 52; c++) if (!used.has(c)) deck.push(c)
+  const remaining = 5 - board.length
+  if (remaining === 0) {
+    const s1 = _evaluate7([...hero, ...board]), s2 = _evaluate7([...villain, ...board])
+    return s1 < s2 ? 1 : s1 > s2 ? 0 : 0.5
   }
-  if (_nChooseK(deck.length, need) <= 100000) {
-    let w = 0, t = 0, total = 0
-    _enumCombos(deck, need, combo => {
-      const fb = [...board, ...combo]
-      const hs = _best5([...h, ...fb]), vs = _best5([...v, ...fb])
-      if (hs > vs) w++; else if (hs === vs) t++
-      total++
+  let w = 0, ti = 0, total = 0
+  const nCombos = _nChooseK(deck.length, remaining)
+  if (nCombos <= 100000) {
+    total = _enumerate5(deck, remaining, (combo) => {
+      const b = [...board, ...combo]
+      const s1 = _evaluate7([...hero, ...b]), s2 = _evaluate7([...villain, ...b])
+      if (s1 < s2) w++; else if (s1 === s2) ti++
     })
-    return total ? (w + t * 0.5) / total : 0.5
+    return (w + ti / 2) / total
   }
-  let w = 0, t = 0
-  for (let i = 0; i < n; i++) {
-    const d2 = [...deck]
-    for (let k = d2.length - 1; k > 0; k--) { const j = (Math.random() * (k + 1)) | 0;[d2[k], d2[j]] = [d2[j], d2[k]] }
-    const fb = [...board, ...d2.slice(0, need)]
-    const hs = _best5([...h, ...fb]), vs = _best5([...v, ...fb])
-    if (hs > vs) w++; else if (hs === vs) t++
+  const N = remaining === 5 ? 150000 : 50000
+  for (let i = 0; i < N; i++) {
+    const b = _sampleBoard(deck, remaining, board)
+    const s1 = _evaluate7([...hero, ...b]), s2 = _evaluate7([...villain, ...b])
+    if (s1 < s2) w++; else if (s1 === s2) ti++
   }
-  return (w + t * 0.5) / n
+  return (w + ti / 2) / N
 }
 
-function _calcEquity3(h, v1, v2, board, n = 1500) {
-  const deck = _makeDeck([...h, ...v1, ...v2, ...board])
-  const need = 5 - board.length
-  const heroShare = (runout) => {
-    const fb = [...board, ...runout]
-    const sh = _best5([...h, ...fb]), s1 = _best5([...v1, ...fb]), s2 = _best5([...v2, ...fb])
-    const best = Math.max(sh, s1, s2)
-    if (sh !== best) return 0
-    let winners = 1
-    if (s1 === best) winners++
-    if (s2 === best) winners++
-    return 1 / winners
+// equity3 — exact port of Opus equity3, cards = int arrays
+function _equity3(hero, v1, v2, board) {
+  const used = new Set([...hero, ...v1, ...v2, ...board])
+  const deck = []; for (let c = 0; c < 52; c++) if (!used.has(c)) deck.push(c)
+  const remaining = 5 - board.length
+  let heroShare = 0, total = 0
+  const evalAll = (b) => {
+    const sh = _evaluate7([...hero, ...b]), s1 = _evaluate7([...v1, ...b]), s2 = _evaluate7([...v2, ...b])
+    const best = Math.min(sh, s1, s2)  // lower = better
+    if (sh === best) { let winners = 1; if (s1 === best) winners++; if (s2 === best) winners++; heroShare += 1 / winners }
   }
-  if (need <= 0) return heroShare([])
-  if (_nChooseK(deck.length, need) <= 100000) {
-    let hs = 0, total = 0
-    _enumCombos(deck, need, combo => { hs += heroShare(combo); total++ })
-    return total ? hs / total : 1 / 3
+  if (remaining === 0) { evalAll(board); return heroShare }
+  const nCombos = _nChooseK(deck.length, remaining)
+  if (nCombos <= 100000) {
+    total = _enumerate5(deck, remaining, (combo) => evalAll([...board, ...combo]))
+  } else {
+    const N = remaining === 5 ? 150000 : 50000
+    for (let i = 0; i < N; i++) evalAll(_sampleBoard(deck, remaining, board))
+    total = N
   }
-  let hs = 0
-  for (let i = 0; i < n; i++) {
-    const d2 = [...deck]
-    for (let k = d2.length - 1; k > 0; k--) { const j = (Math.random() * (k + 1)) | 0;[d2[k], d2[j]] = [d2[j], d2[k]] }
-    hs += heroShare(d2.slice(0, need))
-  }
-  return hs / n
+  return heroShare / total
 }
 
 function _parseHand(text) {
@@ -339,14 +347,15 @@ function _calcSessionStats(hands) {
       if (!hs || hs.cards.length < 2) continue
       const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2)
       if (allVs.length === 0) continue
-      const board = h.boardAtAllin || []
+      const board = (h.boardAtAllin || []).map(_cardToInt)
+      const hInts = hs.cards.map(_cardToInt)
       const pot = h.allInPot
       let eq, nInvolved
       if (allVs.length >= 2) {
-        eq = _calcEquity3(hs.cards, allVs[0].cards, allVs[1].cards, board)
+        eq = _equity3(hInts, allVs[0].cards.map(_cardToInt), allVs[1].cards.map(_cardToInt), board)
         nInvolved = 3
       } else {
-        eq = _calcEquity(hs.cards, allVs[0].cards, board)
+        eq = _equity2(hInts, allVs[0].cards.map(_cardToInt), board)
         nInvolved = 2
       }
       const diffChips = pot * (eq - 1 / nInvolved)
@@ -356,7 +365,7 @@ function _calcSessionStats(hands) {
         nInvolved, nShowdown: h.showdown.length,
         hCards: hs.cards.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
         vCards: allVs.map(v => v.cards.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join('')).join('|'),
-        boardAtAllin: board.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
+        boardAtAllin: (h.boardAtAllin || []).map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
         pot, eq: +eq.toFixed(3), diffChips: +diffChips.toFixed(1)
       })
       evChips += diffChips
