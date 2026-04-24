@@ -466,6 +466,7 @@ export default function App() {
   const [hhView, setHhView] = useState('list')
   const [hhSelectedIdx, setHhSelectedIdx] = useState(null)
   const [hhProcessing, setHhProcessing] = useState(false)
+  const [hhProgress, setHhProgress] = useState(null)
   const [hhError, setHhError] = useState(null)
 
   // Load data from storage (graceful fallback to localStorage, then defaults)
@@ -509,44 +510,40 @@ export default function App() {
     const file = e.target.files[0]
     if (!file) return
     setHhProcessing(true)
+    setHhProgress(null)
     setHhError(null)
     try {
       const text = await file.text()
-      // Parse HH client-side (fast, no equity)
       const hands = _parseBetclicHH(text)
       if (!hands.length) { setHhError('Aucune main valide trouvée dans ce fichier.'); setHhProcessing(false); e.target.value = ''; return }
 
-      // Extract all-in spots compactly (only card integers + board)
-      const spots = []
+      // Count all-in spots first for progress display
+      const totalSpots = hands.filter(h => {
+        if (!h.allinDetected || !h.hero) return false
+        const hs = h.showdown.find(s => s.player === h.hero)
+        if (!hs || hs.cards.length < 2) return false
+        return h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2).length > 0
+      }).length
+      setHhProgress({ done: 0, total: totalSpots })
+
+      // Compute equities async, yielding between each spot so UI stays responsive
+      const equities = []
       for (const h of hands) {
         if (!h.allinDetected || !h.hero) continue
         const hs = h.showdown.find(s => s.player === h.hero)
         if (!hs || hs.cards.length < 2) continue
         const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2)
         if (!allVs.length) continue
-        spots.push({
-          hero: hs.cards.map(_cardToInt),
-          villains: allVs.slice(0, 2).map(v => v.cards.map(_cardToInt)),
-          board: (h.boardAtAllin || []).map(_cardToInt),
-        })
+        const board = (h.boardAtAllin || []).map(_cardToInt)
+        const hInts = hs.cards.map(_cardToInt)
+        let eq
+        if (allVs.length >= 2) eq = _equity3(hInts, allVs[0].cards.map(_cardToInt), allVs[1].cards.map(_cardToInt), board)
+        else eq = _equity2(hInts, allVs[0].cards.map(_cardToInt), board)
+        equities.push(eq)
+        setHhProgress(p => ({ done: (p?.done || 0) + 1, total: totalSpots }))
+        await new Promise(r => setTimeout(r, 0)) // yield to UI thread
       }
 
-      // Send only spots to server for equity computation
-      let equities = spots.map(() => null)
-      if (spots.length > 0) {
-        const res = await fetch('/api/compute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ spots }),
-        })
-        const raw = await res.text()
-        let json
-        try { json = JSON.parse(raw) } catch { throw new Error('Réponse serveur invalide: ' + raw.slice(0, 120)) }
-        if (!res.ok) throw new Error(json.error || 'Erreur serveur')
-        equities = json.equities
-      }
-
-      // Compute session stats with server-provided equities
       const stats = _calcSessionStatsWithEquities(hands, equities)
       const newSessions = [...(data.hhSessions || []), stats]
       saveData({ ...data, hhSessions: newSessions })
@@ -556,6 +553,7 @@ export default function App() {
       setHhError('Erreur: ' + err.message)
     }
     setHhProcessing(false)
+    setHhProgress(null)
     e.target.value = ''
   }
 
@@ -1248,7 +1246,11 @@ export default function App() {
                   <span className="hh-drop-icon">▲</span>
                   <div className="hh-drop-title">IMPORTER FICHIER HH</div>
                   <div className="hh-drop-sub">Format Betclic .txt — Spin &amp; Go</div>
-                  {hhProcessing && <div className="hh-drop-loading">ANALYSE EN COURS...</div>}
+                  {hhProcessing && <div className="hh-drop-loading">
+                    {hhProgress && hhProgress.total > 0
+                      ? `CALCUL EQUITY ${hhProgress.done}/${hhProgress.total}...`
+                      : 'ANALYSE EN COURS...'}
+                  </div>}
                   <input id="hh-file" type="file" accept=".txt" style={{ display: 'none' }} onChange={handleHHImport} />
                 </label>
                 {hhError && <div className="hh-error">{hhError}</div>}
