@@ -397,6 +397,60 @@ function _calcSessionStats(hands) {
   }
 }
 
+// Same as _calcSessionStats but uses pre-computed equities from server (array indexed by spot order)
+function _calcSessionStatsWithEquities(hands, equities) {
+  const tourns = {}
+  for (const h of hands) {
+    const gid = h.gameId || '_'
+    if (!tourns[gid]) tourns[gid] = { hands: [], prizePool: h.prizePool, buyIn: h.buyIn, multiplier: h.multiplier, heroPrize: 0, heroWon: false }
+    tourns[gid].hands.push(h)
+    if (h.heroFinish) { tourns[gid].heroPrize = h.heroFinish.prize; tourns[gid].heroWon = true }
+  }
+  let evEurTotal = 0, evChipsTotal = 0, allinTotal = 0, buyInTotal = 0, prizeTotal = 0, wonCount = 0
+  const tList = []
+  let spotIdx = 0
+  for (const [gid, tn] of Object.entries(tourns)) {
+    const totalChips = tn.hands[0]?.players.reduce((s, p) => s + p.chips, 0) || 500
+    let evEur = 0, evChips = 0, allin = 0
+    for (const h of tn.hands) {
+      if (!h.allinDetected || !h.hero) continue
+      const hs = h.showdown.find(s => s.player === h.hero)
+      if (!hs || hs.cards.length < 2) continue
+      const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2)
+      if (allVs.length === 0) continue
+      const eq = equities[spotIdx++]
+      if (eq === null || eq === undefined) continue
+      const nInvolved = allVs.length >= 2 ? 3 : 2
+      const pot = h.allInPot
+      const diffChips = pot * (eq - 1 / nInvolved)
+      const diffEur = (diffChips / totalChips) * tn.prizePool
+      evChips += diffChips; evEur += diffEur; allin++
+    }
+    evEurTotal += evEur; evChipsTotal += evChips; allinTotal += allin
+    buyInTotal += tn.buyIn; prizeTotal += tn.heroPrize
+    if (tn.heroWon) wonCount++
+    tList.push({
+      gameId: gid, date: tn.hands[0]?.date || null,
+      prizePool: tn.prizePool, buyIn: tn.buyIn, multiplier: tn.multiplier,
+      handCount: tn.hands.length, allinSpots: allin,
+      evChips, evEur, heroWon: tn.heroWon, heroPrize: tn.heroPrize,
+    })
+  }
+  const n = Object.keys(tourns).length
+  return {
+    importedAt: new Date().toISOString(),
+    totalHands: hands.length, totalTournaments: n,
+    totalBuyIn: buyInTotal, totalPrizeWon: prizeTotal,
+    netResult: prizeTotal - buyInTotal,
+    winRate: n ? wonCount / n : 0,
+    allinSpots: allinTotal,
+    evChips: evChipsTotal,
+    evEur: evEurTotal,
+    chipEvPerTourn: n ? evChipsTotal / n : 0,
+    tournaments: tList,
+  }
+}
+
 export default function App() {
   const [data, setData] = useState(DEFAULT_DATA)
   const [loading, setLoading] = useState(true)
@@ -458,14 +512,43 @@ export default function App() {
     setHhError(null)
     try {
       const text = await file.text()
-      const res = await fetch('/api/compute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Erreur serveur')
-      const newSessions = [...(data.hhSessions || []), json]
+      // Parse HH client-side (fast, no equity)
+      const hands = _parseBetclicHH(text)
+      if (!hands.length) { setHhError('Aucune main valide trouvée dans ce fichier.'); setHhProcessing(false); e.target.value = ''; return }
+
+      // Extract all-in spots compactly (only card integers + board)
+      const spots = []
+      for (const h of hands) {
+        if (!h.allinDetected || !h.hero) continue
+        const hs = h.showdown.find(s => s.player === h.hero)
+        if (!hs || hs.cards.length < 2) continue
+        const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2)
+        if (!allVs.length) continue
+        spots.push({
+          hero: hs.cards.map(_cardToInt),
+          villains: allVs.slice(0, 2).map(v => v.cards.map(_cardToInt)),
+          board: (h.boardAtAllin || []).map(_cardToInt),
+        })
+      }
+
+      // Send only spots to server for equity computation
+      let equities = spots.map(() => null)
+      if (spots.length > 0) {
+        const res = await fetch('/api/compute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ spots }),
+        })
+        const raw = await res.text()
+        let json
+        try { json = JSON.parse(raw) } catch { throw new Error('Réponse serveur invalide: ' + raw.slice(0, 120)) }
+        if (!res.ok) throw new Error(json.error || 'Erreur serveur')
+        equities = json.equities
+      }
+
+      // Compute session stats with server-provided equities
+      const stats = _calcSessionStatsWithEquities(hands, equities)
+      const newSessions = [...(data.hhSessions || []), stats]
       saveData({ ...data, hhSessions: newSessions })
       setHhSelectedIdx(newSessions.length - 1)
       setHhView('detail')
