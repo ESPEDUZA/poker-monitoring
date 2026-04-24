@@ -130,12 +130,41 @@ function _makeDeck(exclude) {
   return d
 }
 
+function _nChooseK(n, k) {
+  if (k < 0 || k > n) return 0
+  if (k === 0 || k === n) return 1
+  k = Math.min(k, n - k)
+  let r = 1
+  for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1)
+  return Math.round(r)
+}
+
+function _enumCombos(deck, k, cb) {
+  const n = deck.length
+  if (k === 0) { cb([]); return }
+  if (k === 1) { for (let i = 0; i < n; i++) cb([deck[i]]); return }
+  if (k === 2) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) cb([deck[i], deck[j]]); return }
+  if (k === 3) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) cb([deck[i], deck[j], deck[m]]); return }
+  if (k === 4) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) for (let p = m+1; p < n; p++) cb([deck[i], deck[j], deck[m], deck[p]]); return }
+  if (k === 5) { for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) for (let m = j+1; m < n; m++) for (let p = m+1; p < n; p++) for (let q = p+1; q < n; q++) cb([deck[i], deck[j], deck[m], deck[p], deck[q]]); return }
+}
+
 function _calcEquity(h, v, board, n = 1500) {
   const deck = _makeDeck([...h, ...v, ...board])
   const need = 5 - board.length
   if (need <= 0) {
     const hs = _best5([...h, ...board]), vs = _best5([...v, ...board])
     return hs > vs ? 1 : hs < vs ? 0 : 0.5
+  }
+  if (_nChooseK(deck.length, need) <= 100000) {
+    let w = 0, t = 0, total = 0
+    _enumCombos(deck, need, combo => {
+      const fb = [...board, ...combo]
+      const hs = _best5([...h, ...fb]), vs = _best5([...v, ...fb])
+      if (hs > vs) w++; else if (hs === vs) t++
+      total++
+    })
+    return total ? (w + t * 0.5) / total : 0.5
   }
   let w = 0, t = 0
   for (let i = 0; i < n; i++) {
@@ -146,6 +175,34 @@ function _calcEquity(h, v, board, n = 1500) {
     if (hs > vs) w++; else if (hs === vs) t++
   }
   return (w + t * 0.5) / n
+}
+
+function _calcEquity3(h, v1, v2, board, n = 1500) {
+  const deck = _makeDeck([...h, ...v1, ...v2, ...board])
+  const need = 5 - board.length
+  const heroShare = (runout) => {
+    const fb = [...board, ...runout]
+    const sh = _best5([...h, ...fb]), s1 = _best5([...v1, ...fb]), s2 = _best5([...v2, ...fb])
+    const best = Math.max(sh, s1, s2)
+    if (sh !== best) return 0
+    let winners = 1
+    if (s1 === best) winners++
+    if (s2 === best) winners++
+    return 1 / winners
+  }
+  if (need <= 0) return heroShare([])
+  if (_nChooseK(deck.length, need) <= 100000) {
+    let hs = 0, total = 0
+    _enumCombos(deck, need, combo => { hs += heroShare(combo); total++ })
+    return total ? hs / total : 1 / 3
+  }
+  let hs = 0
+  for (let i = 0; i < n; i++) {
+    const d2 = [...deck]
+    for (let k = d2.length - 1; k > 0; k--) { const j = (Math.random() * (k + 1)) | 0;[d2[k], d2[j]] = [d2[j], d2[k]] }
+    hs += heroShare(d2.slice(0, need))
+  }
+  return hs / n
 }
 
 function _parseHand(text) {
@@ -277,22 +334,29 @@ function _calcSessionStats(hands) {
     const totalChips = tn.hands[0]?.players.reduce((s, p) => s + p.chips, 0) || 500
     let evEur = 0, evChips = 0, allin = 0
     for (const h of tn.hands) {
-      // Need: all-in detected + both players visible at showdown
       if (!h.allinDetected || !h.hero) continue
       const hs = h.showdown.find(s => s.player === h.hero)
-      const vs = h.showdown.find(s => s.player !== h.hero)
-      if (!hs || hs.cards.length < 2 || !vs || vs.cards.length < 2) continue
-      const hCards = hs.cards
-      const eq = _calcEquity(hCards, vs.cards, h.boardAtAllin || [])
+      if (!hs || hs.cards.length < 2) continue
+      const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2)
+      if (allVs.length === 0) continue
+      const board = h.boardAtAllin || []
       const pot = h.allInPot
-      const diffChips = pot * (eq - 0.5)
+      let eq, nInvolved
+      if (allVs.length >= 2) {
+        eq = _calcEquity3(hs.cards, allVs[0].cards, allVs[1].cards, board)
+        nInvolved = 3
+      } else {
+        eq = _calcEquity(hs.cards, allVs[0].cards, board)
+        nInvolved = 2
+      }
+      const diffChips = pot * (eq - 1 / nInvolved)
       const diffEur = (diffChips / totalChips) * tn.prizePool
       console.log('[CEV]', {
         gid: gid.slice(-6), hand: h.handId?.slice(-6),
-        nShowdown: h.showdown.length,
-        hCards: hCards.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
-        vCards: vs.cards.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
-        boardAtAllin: (h.boardAtAllin || []).map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
+        nInvolved, nShowdown: h.showdown.length,
+        hCards: hs.cards.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
+        vCards: allVs.map(v => v.cards.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join('')).join('|'),
+        boardAtAllin: board.map(c => _RANKS[c.rank] + 'SHDC'[c.suit]).join(''),
         pot, eq: +eq.toFixed(3), diffChips: +diffChips.toFixed(1)
       })
       evChips += diffChips
