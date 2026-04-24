@@ -181,7 +181,7 @@ function _equity2(hero, villain, board) {
     })
     return (w + ti / 2) / total
   }
-  const N = remaining === 5 ? 150000 : 50000
+  const N = remaining === 5 ? 3000 : 2000
   for (let i = 0; i < N; i++) {
     const b = _sampleBoard(deck, remaining, board)
     const s1 = _evaluate7([...hero, ...b]), s2 = _evaluate7([...villain, ...b])
@@ -206,7 +206,7 @@ function _equity3(hero, v1, v2, board) {
   if (nCombos <= 100000) {
     total = _enumerate5(deck, remaining, (combo) => evalAll([...board, ...combo]))
   } else {
-    const N = remaining === 5 ? 150000 : 50000
+    const N = remaining === 5 ? 3000 : 2000
     for (let i = 0; i < N; i++) evalAll(_sampleBoard(deck, remaining, board))
     total = N
   }
