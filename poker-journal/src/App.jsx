@@ -451,28 +451,29 @@ export default function App() {
     }
   }
 
-  const handleHHImport = (e) => {
+  const handleHHImport = async (e) => {
     const file = e.target.files[0]
     if (!file) return
     setHhProcessing(true)
     setHhError(null)
-    const reader = new FileReader()
-    reader.onload = (evt) => {
-      try {
-        const hands = _parseBetclicHH(evt.target.result)
-        if (!hands.length) { setHhError('Aucune main valide trouvée dans ce fichier.'); setHhProcessing(false); return }
-        const stats = _calcSessionStats(hands)
-        const newSessions = [...(data.hhSessions || []), stats]
-        saveData({ ...data, hhSessions: newSessions })
-        setHhSelectedIdx(newSessions.length - 1)
-        setHhView('detail')
-      } catch (err) {
-        setHhError('Erreur de parsing: ' + err.message)
-      }
-      setHhProcessing(false)
-      e.target.value = ''
+    try {
+      const text = await file.text()
+      const res = await fetch('/api/compute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Erreur serveur')
+      const newSessions = [...(data.hhSessions || []), json]
+      saveData({ ...data, hhSessions: newSessions })
+      setHhSelectedIdx(newSessions.length - 1)
+      setHhView('detail')
+    } catch (err) {
+      setHhError('Erreur: ' + err.message)
     }
-    reader.readAsText(file, 'UTF-8')
+    setHhProcessing(false)
+    e.target.value = ''
   }
 
   const triggerXpBurst = (amount) => {
