@@ -82,7 +82,7 @@ function equity2(hero, villain, board) {
     total = _enum(deck, rem, combo => { const b = [...board, ...combo]; const s1 = _ev7([...hero, ...b]), s2 = _ev7([...villain, ...b]); if (s1 < s2) w++; else if (s1 === s2) ti++ })
     return total ? (w + ti / 2) / total : 0.5
   }
-  const N = rem === 5 ? 150000 : 50000
+  const N = 5000
   for (let i = 0; i < N; i++) { const b = _sample(deck, rem, board); const s1 = _ev7([...hero, ...b]), s2 = _ev7([...villain, ...b]); if (s1 < s2) w++; else if (s1 === s2) ti++ }
   return (w + ti / 2) / N
 }
@@ -101,7 +101,7 @@ function equity3(hero, v1, v2, board) {
   if (_nCk(deck.length, rem) <= 100000) {
     total = _enum(deck, rem, combo => evalAll([...board, ...combo]))
   } else {
-    const N = rem === 5 ? 150000 : 50000
+    const N = 5000
     for (let i = 0; i < N; i++) evalAll(_sample(deck, rem, board))
     total = N
   }
