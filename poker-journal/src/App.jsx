@@ -222,11 +222,12 @@ function _parseHand(text) {
     prizePool: 0, buyIn: 0, multiplier: 1,
     blinds: { sb: 0, bb: 0 },
     players: [], hero: null, heroCards: [],
-    board: [], boardAtAllin: [],
+    board: [], boardAtAllin: [], activeAtAllin: null,
     allInStreet: null, allInPot: 0, allinDetected: false,
     showdown: [], winners: [], heroFinish: null,
   }
   let sec = 'header', boardFlop = [], boardTurn = null, boardRiver = null
+  const activePlayers = new Set()
   for (const line of lines) {
     if (line === '*** HEADER ***') { sec = 'header'; continue }
     if (line === '*** PLAYERS ***') { sec = 'players'; continue }
@@ -273,6 +274,7 @@ function _parseHand(text) {
         const isHero = m[3].includes('Hero')
         hand.players.push({ name: m[1].trim(), chips: +m[2], isHero })
         if (isHero) hand.hero = m[1].trim()
+        activePlayers.add(m[1].trim())
       }
     }
 
@@ -281,12 +283,15 @@ function _parseHand(text) {
       if (m && m[1].trim() === hand.hero) hand.heroCards = _parseCardArr(m[2])
     }
 
-    // Detect any all-in in the hand (hero OR villain) — CEV needs showdown, not who shoved
-    if (['preflop', 'flop', 'turn', 'river'].includes(sec) && !hand.allinDetected) {
-      if (/all[\s\-]?in/i.test(line)) {
+    // Track folds and all-ins in betting streets
+    if (['preflop', 'flop', 'turn', 'river'].includes(sec)) {
+      const foldM = line.match(/^(.+?)\s+folds/)
+      if (foldM) activePlayers.delete(foldM[1].replace(/:$/, '').trim())
+      if (!hand.allinDetected && /all[\s\-]?in/i.test(line)) {
         hand.allinDetected = true
         hand.allInStreet = sec
         hand.boardAtAllin = [...boardFlop, ...(boardTurn ? [boardTurn] : []), ...(boardRiver ? [boardRiver] : [])]
+        hand.activeAtAllin = new Set(activePlayers)
       }
     }
 
@@ -340,12 +345,14 @@ function _calcSessionStats(hands) {
   for (const [gid, tn] of Object.entries(tourns)) {
     // Sum all player stacks = conserved total throughout tournament
     const totalChips = tn.hands[0]?.players.reduce((s, p) => s + p.chips, 0) || 500
+    const basePrize = tn.prizePool / (tn.multiplier || 1)
     let evEur = 0, evChips = 0, allin = 0
     for (const h of tn.hands) {
       if (!h.allinDetected || !h.hero) continue
       const hs = h.showdown.find(s => s.player === h.hero)
       if (!hs || hs.cards.length < 2) continue
-      const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2)
+      const activeSet = h.activeAtAllin
+      const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2 && (!activeSet || activeSet.has(s.player)))
       if (allVs.length === 0) continue
       const board = (h.boardAtAllin || []).map(_cardToInt)
       const hInts = hs.cards.map(_cardToInt)
@@ -359,7 +366,7 @@ function _calcSessionStats(hands) {
         nInvolved = 2
       }
       const diffChips = pot * (eq - 1 / nInvolved)
-      const diffEur = (diffChips / totalChips) * tn.prizePool
+      const diffEur = (diffChips / totalChips) * basePrize
       console.log('[CEV]', {
         gid: gid.slice(-6), hand: h.handId?.slice(-6),
         nInvolved, nShowdown: h.showdown.length,
@@ -412,18 +419,20 @@ function _calcSessionStatsWithEquities(hands, equities) {
   for (const [gid, tn] of Object.entries(tourns)) {
     const totalChips = tn.hands[0]?.players.reduce((s, p) => s + p.chips, 0) || 500
     let evEur = 0, evChips = 0, allin = 0
+    const basePrize = tn.prizePool / (tn.multiplier || 1)
     for (const h of tn.hands) {
       if (!h.allinDetected || !h.hero) continue
       const hs = h.showdown.find(s => s.player === h.hero)
       if (!hs || hs.cards.length < 2) continue
-      const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2)
+      const activeSet = h.activeAtAllin
+      const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2 && (!activeSet || activeSet.has(s.player)))
       if (allVs.length === 0) continue
       const eq = equities[spotIdx++]
       if (eq === null || eq === undefined) continue
       const nInvolved = allVs.length >= 2 ? 3 : 2
       const pot = h.allInPot
       const diffChips = pot * (eq - 1 / nInvolved)
-      const diffEur = (diffChips / totalChips) * tn.prizePool
+      const diffEur = (diffChips / totalChips) * basePrize
       evChips += diffChips; evEur += diffEur; allin++
     }
     evEurTotal += evEur; evChipsTotal += evChips; allinTotal += allin
@@ -517,12 +526,17 @@ export default function App() {
       const hands = _parseBetclicHH(text)
       if (!hands.length) { setHhError('Aucune main valide trouvée dans ce fichier.'); setHhProcessing(false); e.target.value = ''; return }
 
+      const _activeVillains = (h) => {
+        const activeSet = h.activeAtAllin
+        return h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2 && (!activeSet || activeSet.has(s.player)))
+      }
+
       // Count all-in spots first for progress display
       const totalSpots = hands.filter(h => {
         if (!h.allinDetected || !h.hero) return false
         const hs = h.showdown.find(s => s.player === h.hero)
         if (!hs || hs.cards.length < 2) return false
-        return h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2).length > 0
+        return _activeVillains(h).length > 0
       }).length
       setHhProgress({ done: 0, total: totalSpots })
 
@@ -532,7 +546,7 @@ export default function App() {
         if (!h.allinDetected || !h.hero) continue
         const hs = h.showdown.find(s => s.player === h.hero)
         if (!hs || hs.cards.length < 2) continue
-        const allVs = h.showdown.filter(s => s.player !== h.hero && s.cards.length >= 2)
+        const allVs = _activeVillains(h)
         if (!allVs.length) continue
         const board = (h.boardAtAllin || []).map(_cardToInt)
         const hInts = hs.cards.map(_cardToInt)
